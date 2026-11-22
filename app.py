@@ -438,6 +438,7 @@ HTML_SPA = """<!doctype html>
   .toggle { padding:8px 13px; border-radius:20px; font-size:13px; font-weight:700; }
   .toggle.on { background:rgba(16,185,129,0.2); color:#34d399; border:1px solid #10b981; }
   .toggle.off { background:rgba(244,63,94,0.15); color:#fb7185; border:1px solid #e11d48; }
+  .price-pill { padding:8px 13px; border-radius:20px; font-size:13px; font-weight:700; background:rgba(251,191,36,0.16); color:#fbbf24; border:1px solid #f59e0b; white-space:nowrap; }
   .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#1e293b; color:#38bdf8; border:1px solid #38bdf8; padding:10px 18px; border-radius:99px; font-size:13px; font-weight:600; z-index:99; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.6); }
   label.lbl { display:block; font-size:11px; color:var(--muted); margin-bottom:3px; }
 </style>
@@ -700,15 +701,14 @@ function renderList() {
       <div style="font-weight:700; font-size:15px; margin-bottom:6px;">${esc(p.titolo)}</div>
       <div style="margin-bottom:10px;">
         ${deltaBadge}
-        ${p.codice_mw ? `<span class="badge">MW: ${esc(p.codice_mw)}</span>` : ''}
+        ${p.codice_mw ? `<span class="badge" style="user-select:none;-webkit-user-select:none;">MW: <span style="user-select:all;-webkit-user-select:all;display:inline-block;color:#f4f4f5;">${esc(p.codice_mw)}</span></span>` : ''}
         ${p.ean ? `<span class="badge">EAN: ${esc(p.ean)}</span>` : ''}
-        ${p.meta.prezzo !== null ? `<span class="badge price">€ ${p.meta.prezzo}</span>` : ''}
         ${p.meta.ram ? `<span class="badge">${esc(p.meta.ram)}GB RAM</span>` : ''}
         ${p.meta.ssd ? `<span class="badge">${esc(p.meta.ssd)}GB SSD</span>` : ''}
         ${p.meta.gpu_tipo === 'Dedicata' ? `<span class="badge" style="color:#c084fc;">GPU Dedicata</span>` : ''}
       </div>
 
-      <div class="row" style="justify-content:space-between; background:#0e0e11; padding:9px; border-radius:10px;">
+      <div class="row" style="justify-content:space-between; background:#0e0e11; padding:9px; border-radius:10px; gap:6px;">
         <div class="row">
           <button type="button" class="sec qty" onclick="updateQty(${p.id}, -1)">-</button>
           <div style="min-width:54px; text-align:center;">
@@ -718,9 +718,12 @@ function renderList() {
           <button type="button" class="sec qty" onclick="updateQty(${p.id}, 1)">+</button>
         </div>
 
-        <button type="button" class="toggle ${p.esposto ? 'on' : 'off'}" onclick="toggleEsposto(${p.id})">
-          ${p.esposto ? 'ESPOSTO: SÌ' : 'ESPOSTO: NO'}
-        </button>
+        <div class="row" style="gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+          ${p.meta.prezzo !== null ? `<span class="price-pill">€ ${Number.isInteger(p.meta.prezzo) ? p.meta.prezzo : p.meta.prezzo.toFixed(2)}</span>` : ''}
+          <button type="button" class="toggle ${p.esposto ? 'on' : 'off'}" onclick="toggleEsposto(${p.id})">
+            ${p.esposto ? 'ESPOSTO: SÌ' : 'ESPOSTO: NO'}
+          </button>
+        </div>
       </div>
 
       <!-- SEZIONE NOTE -->
