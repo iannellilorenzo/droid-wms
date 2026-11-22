@@ -7,6 +7,9 @@ import time
 import getpass
 import secrets
 import sqlite3
+import threading
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import requests
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -15,7 +18,7 @@ from starlette.routing import Route
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 
 try:
     from selectolax.parser import HTMLParser
@@ -27,7 +30,10 @@ except ImportError:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "inventario.db")
 SEC_PATH = os.path.join(BASE_DIR, "security.json")
+BACKUP_DIR = os.path.join(BASE_DIR, "backups")
+os.makedirs(BACKUP_DIR, exist_ok=True)
 
+TZ_ROME = ZoneInfo("Europe/Rome")
 COOKIE_NAME = "droid_wms_session"
 SESSION_MAX_AGE = 86400 * 3650  # 10 anni, rinnovato ad ogni richiesta
 
@@ -78,16 +84,81 @@ def init_db():
                 titolo TEXT NOT NULL,
                 specifiche TEXT NOT NULL,
                 giacenza INTEGER NOT NULL DEFAULT 0,
+                giacenza_base INTEGER NOT NULL DEFAULT 0,
                 esposto INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
                 source_url TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(prodotti)").fetchall()}
+        if "giacenza_base" not in cols:
+            conn.execute("ALTER TABLE prodotti ADD COLUMN giacenza_base INTEGER NOT NULL DEFAULT 0")
+            conn.execute("UPDATE prodotti SET giacenza_base = giacenza")
+        if "note" not in cols:
+            conn.execute("ALTER TABLE prodotti ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mw ON prodotti(codice_mw)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ean ON prodotti(ean)")
 
 
 init_db()
+
+
+def run_nightly_backup_and_reset(date_str=None):
+    if not date_str:
+        date_str = datetime.now(TZ_ROME).strftime("%Y-%m-%d")
+
+    daily_file = os.path.join(BACKUP_DIR, f"giacenze_{date_str}.csv")
+    latest_file = os.path.join(BACKUP_DIR, "giacenze_latest.csv")
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT codice_mw, ean, titolo, giacenza_base, giacenza, esposto, note, specifiche FROM prodotti ORDER BY esposto DESC, titolo ASC"
+        ).fetchall()
+
+        fieldnames = ["Codice PIM", "EAN", "Titolo", "Giacenza Precedente", "Variazione", "Giacenza Finale", "Esposto", "Note", "Prezzo EUR"]
+        for path in (daily_file, latest_file):
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for r in rows:
+                    try:
+                        specs = json.loads(r["specifiche"])
+                    except Exception:
+                        specs = {}
+                    delta = r["giacenza"] - r["giacenza_base"]
+                    writer.writerow({
+                        "Codice PIM": r["codice_mw"] or "",
+                        "EAN": r["ean"] or "",
+                        "Titolo": r["titolo"],
+                        "Giacenza Precedente": r["giacenza_base"],
+                        "Variazione": f"{delta:+d}" if delta != 0 else "0",
+                        "Giacenza Finale": r["giacenza"],
+                        "Esposto": "SI" if r["esposto"] else "NO",
+                        "Note": r["note"] or "",
+                        "Prezzo EUR": specs.get("Prezzo EUR", ""),
+                    })
+
+        conn.execute("UPDATE prodotti SET giacenza_base = giacenza")
+
+
+def midnight_scheduler():
+    last_run_date = None
+    while True:
+        now = datetime.now(TZ_ROME)
+        today_str = now.strftime("%Y-%m-%d")
+        if now.hour == 0 and now.minute == 0 and last_run_date != today_str:
+            yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+            try:
+                run_nightly_backup_and_reset(yesterday_str)
+                last_run_date = today_str
+            except Exception as e:
+                print(f"[BACKUP ERROR] {e}")
+        time.sleep(20)
+
+
+threading.Thread(target=midnight_scheduler, daemon=True).start()
 
 
 def get_session_data(request: Request):
@@ -149,12 +220,78 @@ def normalize_mw(val):
     return digits if len(digits) == 6 else None
 
 
+def extract_structured_meta(titolo, specs):
+    marchio = (specs.get("Marchio") or specs.get("Marca") or "").strip().upper()
+    if not marchio:
+        known_brands = ["LENOVO", "SAMSUNG", "HP", "ASUS", "ACER", "MSI", "APPLE", "DELL", "LG", "SONY", "HUAWEI", "MICROSOFT"]
+        up_title = titolo.upper()
+        for b in known_brands:
+            if b in up_title or up_title.startswith(b[:3] + " "):
+                marchio = "SAMSUNG" if up_title.startswith("SAM ") else ("LENOVO" if up_title.startswith("LEN ") else b)
+                break
+
+    prezzo = None
+    raw_price = specs.get("Prezzo EUR") or specs.get("Prezzo") or ""
+    m_price = re.search(r"(\d+(?:[.,]\d+)?)", str(raw_price))
+    if m_price:
+        prezzo = float(m_price.group(1).replace(",", "."))
+
+    schermo = str(specs.get("Schermo pollici") or "").strip()
+    if not schermo:
+        for k, v in specs.items():
+            if any(w in k.lower() for w in ["schermo", "display", "pollici", "diagonale"]):
+                m_s = re.search(r"(\d{2}(?:[.,]\d)?)", str(v))
+                if m_s:
+                    schermo = m_s.group(1).replace(",", ".")
+                    break
+
+    ram = str(specs.get("RAM GB") or "").strip()
+    if not ram:
+        for k, v in specs.items():
+            if "ram" in k.lower() or "memoria" in k.lower():
+                m_r = re.search(r"\b(4|6|8|12|16|24|32|64)\b", str(v))
+                if m_r:
+                    ram = m_r.group(1)
+                    break
+
+    ssd = str(specs.get("SSD GB") or "").strip()
+    if not ssd:
+        for k, v in specs.items():
+            if any(w in k.lower() for w in ["ssd", "archiviazione", "capacità", "storage", "disco"]):
+                m_d = re.search(r"\b(64|128|256|512|1000|1024|2000|2048)\b", str(v))
+                if m_d:
+                    ssd = m_d.group(1)
+                    break
+                if re.search(r"\b1\s*TB\b", str(v), re.I):
+                    ssd = "1024"
+                    break
+
+    gpu_raw = str(specs.get("GPU") or specs.get("Scheda grafica") or specs.get("Scheda video") or "").strip()
+    gpu_check = f"{gpu_raw} {titolo}".upper()
+    dedicated_keywords = ["RTX", "GTX", "NVIDIA", "GEFORCE", "RADEON RX", "ARC A", "ARC B", "QUADRO"]
+    is_dedicated = any(kw in gpu_check for kw in dedicated_keywords)
+    gpu_tipo = "Dedicata" if is_dedicated else "Integrata"
+
+    return {
+        "marchio": marchio or "Altro",
+        "prezzo": prezzo,
+        "schermo": schermo,
+        "ram": ram,
+        "ssd": ssd,
+        "gpu_raw": gpu_raw,
+        "gpu_tipo": gpu_tipo,
+    }
+
+
 def serialize_product(row):
     d = dict(row)
     try:
-        d["specs"] = json.loads(d["specifiche"])
+        specs = json.loads(d["specifiche"])
     except Exception:
-        d["specs"] = {}
+        specs = {}
+    d["specs"] = specs
+    d["delta"] = d["giacenza"] - d["giacenza_base"]
+    d["meta"] = extract_structured_meta(d["titolo"], specs)
     del d["specifiche"]
     return d
 
@@ -274,28 +411,31 @@ HTML_SPA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.0</title>
+<title>droid-wms v2.1</title>
 <style>
   :root { --bg:#09090b; --card:#141417; --border:#27272a; --accent:#e11d48; --green:#10b981; --text:#f4f4f5; --muted:#a1a1aa; }
   * { box-sizing: border-box; }
-  body { background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,sans-serif; margin:0; padding:12px; max-width:720px; margin-inline:auto; }
+  body { background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,sans-serif; margin:0; padding:12px; max-width:740px; margin-inline:auto; }
   h1 { font-size:19px; margin:0 0 12px; display:flex; justify-content:space-between; align-items:center; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:13px; margin-bottom:12px; }
-  input[type=text], input[type=url], input[type=number], input[type=file] {
-    width:100%; padding:11px 12px; border-radius:10px; border:1px solid #3f3f46;
-    background:#09090b; color:#fff; font-size:15px;
+  input[type=text], input[type=url], input[type=number], input[type=file], select {
+    width:100%; padding:10px 12px; border-radius:10px; border:1px solid #3f3f46;
+    background:#09090b; color:#fff; font-size:14px; font-family:inherit;
   }
   .row { display:flex; gap:8px; align-items:center; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
   button { padding:10px 14px; border-radius:10px; border:none; font-weight:600; font-size:14px; cursor:pointer; background:var(--accent); color:#fff; }
   button.sec { background:#27272a; color:#e4e4e7; }
-  button.qty { width:44px; height:44px; font-size:20px; padding:0; }
+  button.qty { width:42px; height:42px; font-size:20px; padding:0; }
   .badge { display:inline-block; padding:3px 8px; border-radius:6px; font-size:12px; font-weight:600; background:#27272a; color:var(--muted); margin-right:5px; margin-bottom:4px; }
   .badge.price { color:#fbbf24; }
+  .badge.delta-pos { background:rgba(16,185,129,0.2); color:#34d399; border:1px solid #10b981; font-weight:800; }
+  .badge.delta-neg { background:rgba(244,63,94,0.2); color:#fb7185; border:1px solid #e11d48; font-weight:800; }
   .specs { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; }
   .specs td { padding:5px 4px; border-bottom:1px solid #222226; vertical-align:top; }
   .specs td:first-child { color:var(--muted); width:42%; }
-  .toggle { padding:8px 14px; border-radius:20px; font-size:13px; font-weight:700; }
+  .toggle { padding:8px 13px; border-radius:20px; font-size:13px; font-weight:700; }
   .toggle.on { background:rgba(16,185,129,0.2); color:#34d399; border:1px solid #10b981; }
   .toggle.off { background:rgba(244,63,94,0.15); color:#fb7185; border:1px solid #e11d48; }
   .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#1e293b; color:#38bdf8; border:1px solid #38bdf8; padding:10px 18px; border-radius:99px; font-size:13px; font-weight:600; z-index:99; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.6); }
@@ -306,22 +446,87 @@ HTML_SPA = """<!doctype html>
 
 <h1>
   <span>Inventario Reparto <small id="count-lbl" style="color:var(--muted);font-weight:400"></small></span>
-  <a href="/logout" style="color:var(--muted);font-size:13px;text-decoration:none;">Esci</a>
+  <div class="row">
+    <a href="/api/backup/download" style="color:#38bdf8;font-size:12px;text-decoration:none;margin-right:8px;">Backup CSV</a>
+    <a href="/logout" style="color:var(--muted);font-size:12px;text-decoration:none;">Esci</a>
+  </div>
 </h1>
 
+<!-- RICERCA ISTANTANEA + SORT + FILTRI -->
 <div class="card">
-  <div class="row">
-    <input type="text" id="searchInput" placeholder="Cerca Codice MW (6 cifre), EAN o modello..." oninput="renderList()" autofocus>
-    <button type="button" class="sec" onclick="clearSearch()" style="padding:11px 13px;">✕</button>
+  <div class="row" style="margin-bottom:8px;">
+    <input type="text" id="searchInput" placeholder="Cerca Codice MW (6 cifre), EAN, modello o note..." oninput="renderList()" autofocus>
+    <button type="button" class="sec" onclick="clearSearch()" style="padding:10px 12px;">✕</button>
   </div>
+
+  <div class="grid2" style="margin-bottom:8px;">
+    <div>
+      <label class="lbl">Ordina per</label>
+      <select id="sortSelect" onchange="renderList()">
+        <option value="esposto">Esposti prima</option>
+        <option value="price_asc">Prezzo: crescente</option>
+        <option value="price_desc">Prezzo: decrescente</option>
+        <option value="qty_desc">Giacenza: alta → bassa</option>
+        <option value="qty_asc">Giacenza: bassa → alta</option>
+        <option value="name_asc">Nome: A → Z</option>
+      </select>
+    </div>
+    <div>
+      <label class="lbl">Stato rapido</label>
+      <select id="quickFilter" onchange="renderList()">
+        <option value="all">Tutti i prodotti</option>
+        <option value="esposti">Solo Esposti</option>
+        <option value="non_esposti">Solo Non Esposti</option>
+        <option value="changed">Con variazioni oggi (+n / -n)</option>
+      </select>
+    </div>
+  </div>
+
+  <details>
+    <summary style="cursor:pointer; color:var(--muted); font-size:13px; font-weight:600;">Filtri hardware & prezzo</summary>
+    <div class="grid3" style="margin-top:10px;">
+      <div>
+        <label class="lbl">Marca</label>
+        <select id="fBrand" onchange="renderList()"><option value="">Tutte</option></select>
+      </div>
+      <div>
+        <label class="lbl">Schermo</label>
+        <select id="fScreen" onchange="renderList()"><option value="">Tutti</option></select>
+      </div>
+      <div>
+        <label class="lbl">Scheda Video</label>
+        <select id="fGpu" onchange="renderList()">
+          <option value="">Tutte</option>
+          <option value="Dedicata">Dedicata (RTX/GTX/RX)</option>
+          <option value="Integrata">Integrata</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">RAM (GB)</label>
+        <select id="fRam" onchange="renderList()"><option value="">Tutte</option></select>
+      </div>
+      <div>
+        <label class="lbl">SSD (GB)</label>
+        <select id="fSsd" onchange="renderList()"><option value="">Tutti</option></select>
+      </div>
+      <div>
+        <label class="lbl">Prezzo Max (€)</label>
+        <input type="number" id="fMaxPrice" placeholder="es. 800" oninput="renderList()">
+      </div>
+    </div>
+    <div style="text-align:right; margin-top:8px;">
+      <button type="button" class="sec" onclick="resetFilters()" style="font-size:12px; padding:6px 10px;">Azzera filtri</button>
+    </div>
+  </details>
 </div>
 
+<!-- AGGIUNGI PRODOTTO / CSV / CHIUSURA GIORNATA -->
 <div class="card">
   <details id="addDetails">
-    <summary style="cursor:pointer;font-weight:600;font-size:14px;">+ Aggiungi prodotto (Link qrc.mw / Manuale / CSV)</summary>
+    <summary style="cursor:pointer;font-weight:600;font-size:14px;">+ Aggiungi prodotto / Importa CSV / Chiusura giornata</summary>
 
     <div style="margin-top:12px;">
-      <label class="lbl">Da cartellino digitale qrc.mw</label>
+      <label class="lbl">Leggi da cartellino digitale qrc.mw</label>
       <div class="row">
         <input type="url" id="fetchUrl" placeholder="Incolla link https://qrc.mw/...">
         <button type="button" class="sec" id="fetchBtn" onclick="fetchFromUrl()">Leggi</button>
@@ -356,12 +561,17 @@ HTML_SPA = """<!doctype html>
     </form>
 
     <form onsubmit="importCsv(event)" style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px;">
-      <label class="lbl">Importa / Aggiorna da file CSV MediaWorld</label>
+      <label class="lbl">Importa / Aggiorna da CSV MediaWorld</label>
       <div class="row">
         <input type="file" id="csvFile" accept=".csv" required style="padding:7px;">
         <button type="submit" class="sec">Importa</button>
       </div>
     </form>
+
+    <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px; display:flex; justify-content:space-between; align-items:center;">
+      <span style="font-size:12px; color:var(--muted);">Backup automatico alle 00:00 (azzera +n/-n)</span>
+      <button type="button" class="sec" onclick="manualCloseDay()" style="font-size:12px; padding:7px 10px;">Chiudi giornata ora</button>
+    </div>
   </details>
 </div>
 
@@ -376,18 +586,48 @@ function showToast(msg) {
   t.textContent = msg;
   t.style.display = 'block';
   clearTimeout(window._toastTimer);
-  window._toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2600);
+  window._toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2800);
 }
 
 async function loadProducts() {
   const res = await fetch('/api/products');
   if (res.status === 401) { location.href = '/login'; return; }
   PRODUCTS = await res.json();
+  populateFilterDropdowns();
   renderList();
+}
+
+function populateFilterDropdowns() {
+  const brands = new Set(), screens = new Set(), rams = new Set(), ssds = new Set();
+  PRODUCTS.forEach(p => {
+    if (p.meta.marchio) brands.add(p.meta.marchio);
+    if (p.meta.schermo) screens.add(p.meta.schermo);
+    if (p.meta.ram) rams.add(p.meta.ram);
+    if (p.meta.ssd) ssds.add(p.meta.ssd);
+  });
+
+  fillSelect('fBrand', [...brands].sort(), 'Tutte');
+  fillSelect('fScreen', [...screens].sort((a,b) => parseFloat(a)-parseFloat(b)), 'Tutti', v => v + '"');
+  fillSelect('fRam', [...rams].sort((a,b) => parseInt(a)-parseInt(b)), 'Tutte', v => v + ' GB');
+  fillSelect('fSsd', [...ssds].sort((a,b) => parseInt(a)-parseInt(b)), 'Tutti', v => v + ' GB');
+}
+
+function fillSelect(id, items, defaultLabel, fmt = v => v) {
+  const sel = document.getElementById(id);
+  const curr = sel.value;
+  sel.innerHTML = `<option value="">${defaultLabel}</option>` +
+    items.map(v => `<option value="${v}">${fmt(v)}</option>`).join('');
+  if (items.includes(curr)) sel.value = curr;
 }
 
 function clearSearch() {
   document.getElementById('searchInput').value = '';
+  renderList();
+}
+
+function resetFilters() {
+  ['fBrand','fScreen','fGpu','fRam','fSsd','fMaxPrice'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('quickFilter').value = 'all';
   renderList();
 }
 
@@ -400,12 +640,43 @@ function renderList() {
   const qDigits = q.replace(/\D/g, '');
   const qEan13 = qDigits.length === 12 ? '0' + qDigits : qDigits;
 
-  const filtered = PRODUCTS.filter(p => {
-    if (!q) return true;
-    const matchMw = p.codice_mw && p.codice_mw.includes(q);
-    const matchEan = p.ean && (p.ean.includes(q) || (qEan13 && p.ean.includes(qEan13)));
-    const matchTitle = p.titolo.toLowerCase().includes(q);
-    return matchMw || matchEan || matchTitle;
+  const sortBy = document.getElementById('sortSelect').value;
+  const quick = document.getElementById('quickFilter').value;
+  const fBrand = document.getElementById('fBrand').value;
+  const fScreen = document.getElementById('fScreen').value;
+  const fGpu = document.getElementById('fGpu').value;
+  const fRam = document.getElementById('fRam').value;
+  const fSsd = document.getElementById('fSsd').value;
+  const fMaxPrice = parseFloat(document.getElementById('fMaxPrice').value);
+
+  let filtered = PRODUCTS.filter(p => {
+    if (q) {
+      const matchMw = p.codice_mw && p.codice_mw.includes(q);
+      const matchEan = p.ean && (p.ean.includes(q) || (qEan13 && p.ean.includes(qEan13)));
+      const matchTitle = p.titolo.toLowerCase().includes(q);
+      const matchNote = (p.note || '').toLowerCase().includes(q);
+      if (!matchMw && !matchEan && !matchTitle && !matchNote) return false;
+    }
+    if (quick === 'esposti' && !p.esposto) return false;
+    if (quick === 'non_esposti' && p.esposto) return false;
+    if (quick === 'changed' && p.delta === 0) return false;
+    if (fBrand && p.meta.marchio !== fBrand) return false;
+    if (fScreen && p.meta.schermo !== fScreen) return false;
+    if (fGpu && p.meta.gpu_tipo !== fGpu) return false;
+    if (fRam && p.meta.ram !== fRam) return false;
+    if (fSsd && p.meta.ssd !== fSsd) return false;
+    if (!isNaN(fMaxPrice) && (p.meta.prezzo === null || p.meta.prezzo > fMaxPrice)) return false;
+    return true;
+  });
+
+  filtered.sort((a, b) => {
+    if (sortBy === 'esposto') return (b.esposto - a.esposto) || a.titolo.localeCompare(b.titolo);
+    if (sortBy === 'price_asc') return (a.meta.prezzo ?? 999999) - (b.meta.prezzo ?? 999999);
+    if (sortBy === 'price_desc') return (b.meta.prezzo ?? -1) - (a.meta.prezzo ?? -1);
+    if (sortBy === 'qty_desc') return b.giacenza - a.giacenza;
+    if (sortBy === 'qty_asc') return a.giacenza - b.giacenza;
+    if (sortBy === 'name_asc') return a.titolo.localeCompare(b.titolo);
+    return 0;
   });
 
   document.getElementById('count-lbl').textContent = `(${filtered.length}/${PRODUCTS.length})`;
@@ -417,22 +688,27 @@ function renderList() {
   }
 
   container.innerHTML = filtered.map(p => {
+    let deltaBadge = '';
+    if (p.delta > 0) deltaBadge = `<span class="badge delta-pos">+${p.delta}</span>`;
+    else if (p.delta < 0) deltaBadge = `<span class="badge delta-neg">${p.delta}</span>`;
+
     const specsRows = Object.entries(p.specs || {})
       .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
-    const price = p.specs && p.specs['Prezzo EUR'];
-    const stato = p.specs && p.specs['Stato'];
 
     return `
     <div class="card" id="card-${p.id}">
-      <div style="font-weight:700; font-size:16px; margin-bottom:6px;">${esc(p.titolo)}</div>
+      <div style="font-weight:700; font-size:15px; margin-bottom:6px;">${esc(p.titolo)}</div>
       <div style="margin-bottom:10px;">
+        ${deltaBadge}
         ${p.codice_mw ? `<span class="badge">MW: ${esc(p.codice_mw)}</span>` : ''}
         ${p.ean ? `<span class="badge">EAN: ${esc(p.ean)}</span>` : ''}
-        ${price ? `<span class="badge price">€ ${esc(price)}</span>` : ''}
-        ${stato ? `<span class="badge">${esc(stato)}</span>` : ''}
+        ${p.meta.prezzo !== null ? `<span class="badge price">€ ${p.meta.prezzo}</span>` : ''}
+        ${p.meta.ram ? `<span class="badge">${esc(p.meta.ram)}GB RAM</span>` : ''}
+        ${p.meta.ssd ? `<span class="badge">${esc(p.meta.ssd)}GB SSD</span>` : ''}
+        ${p.meta.gpu_tipo === 'Dedicata' ? `<span class="badge" style="color:#c084fc;">GPU Dedicata</span>` : ''}
       </div>
 
-      <div class="row" style="justify-content:space-between; background:#0e0e11; padding:10px; border-radius:10px;">
+      <div class="row" style="justify-content:space-between; background:#0e0e11; padding:9px; border-radius:10px;">
         <div class="row">
           <button type="button" class="sec qty" onclick="updateQty(${p.id}, -1)">-</button>
           <div style="min-width:54px; text-align:center;">
@@ -447,7 +723,15 @@ function renderList() {
         </button>
       </div>
 
-      <details style="margin-top:9px;">
+      <!-- SEZIONE NOTE -->
+      <div style="margin-top:9px;">
+        <div class="row">
+          <input type="text" id="note-${p.id}" value="${esc(p.note || '')}" placeholder="Note reparto (es. ultimo esposto, manca scatola...)" onchange="saveNote(${p.id})" style="font-size:13px; padding:8px 10px;">
+          <button type="button" class="sec" onclick="saveNote(${p.id})" style="padding:8px 11px; font-size:12px;">Salva</button>
+        </div>
+      </div>
+
+      <details style="margin-top:8px;">
         <summary style="cursor:pointer; color:var(--muted); font-size:12px;">Scheda tecnica (${Object.keys(p.specs || {}).length} voci) & Opzioni</summary>
         ${specsRows ? `<table class="specs">${specsRows}</table>` : ''}
         <div class="row" style="margin-top:10px;">
@@ -483,6 +767,21 @@ async function toggleEsposto(id) {
     const idx = PRODUCTS.findIndex(x => x.id === id);
     if (idx !== -1) PRODUCTS[idx] = updated;
     renderList();
+  }
+}
+
+async function saveNote(id) {
+  const note = document.getElementById(`note-${id}`).value;
+  const res = await fetch(`/api/note/${id}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({note})
+  });
+  if (res.ok) {
+    const updated = await res.json();
+    const idx = PRODUCTS.findIndex(x => x.id === id);
+    if (idx !== -1) PRODUCTS[idx] = updated;
+    showToast('Nota salvata');
   }
 }
 
@@ -571,6 +870,15 @@ async function deleteProduct(id) {
   }
 }
 
+async function manualCloseDay() {
+  if (!confirm('Salvare il backup CSV ora e azzerare tutti i contatori +n/-n?')) return;
+  const res = await fetch('/api/close-day', { method: 'POST' });
+  if (res.ok) {
+    showToast('Backup salvato e contatori azzerati!');
+    loadProducts();
+  }
+}
+
 loadProducts();
 </script>
 </body>
@@ -651,9 +959,9 @@ async def api_save(request: Request):
     try:
         with get_db() as conn:
             conn.execute(
-                """INSERT INTO prodotti (codice_mw, ean, titolo, specifiche, giacenza, esposto, source_url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (codice_mw, ean, titolo, specifiche, giacenza, esposto, source_url),
+                """INSERT INTO prodotti (codice_mw, ean, titolo, specifiche, giacenza, giacenza_base, esposto, source_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (codice_mw, ean, titolo, specifiche, giacenza, giacenza, esposto, source_url),
             )
         return JSONResponse({"ok": True})
     except sqlite3.IntegrityError:
@@ -716,18 +1024,18 @@ async def api_import_csv(request: Request):
                     old_specs.update(specs)
                     conn.execute(
                         """UPDATE prodotti
-                           SET titolo = ?, specifiche = ?, giacenza = ?, esposto = ?,
+                           SET titolo = ?, specifiche = ?, giacenza = ?, giacenza_base = ?, esposto = ?,
                                codice_mw = COALESCE(?, codice_mw), ean = COALESCE(?, ean),
                                updated_at = CURRENT_TIMESTAMP
                            WHERE id = ?""",
-                        (titolo, json.dumps(old_specs), giacenza, esposto, codice_mw, ean, existing["id"]),
+                        (titolo, json.dumps(old_specs), giacenza, giacenza, esposto, codice_mw, ean, existing["id"]),
                     )
                     aggiornati += 1
                 else:
                     conn.execute(
-                        """INSERT INTO prodotti (codice_mw, ean, titolo, specifiche, giacenza, esposto)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (codice_mw, ean, titolo, json.dumps(specs), giacenza, esposto),
+                        """INSERT INTO prodotti (codice_mw, ean, titolo, specifiche, giacenza, giacenza_base, esposto)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (codice_mw, ean, titolo, json.dumps(specs), giacenza, giacenza, esposto),
                     )
                     inseriti += 1
 
@@ -755,6 +1063,19 @@ async def api_esposto(request: Request):
         conn.execute(
             "UPDATE prodotti SET esposto = CASE WHEN esposto = 1 THEN 0 ELSE 1 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (pid,),
+        )
+        row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
+    return JSONResponse(serialize_product(row))
+
+
+async def api_note(request: Request):
+    pid = int(request.path_params["pid"])
+    data = await request.json()
+    note = str(data.get("note", ""))
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE prodotti SET note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (note, pid),
         )
         row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
     return JSONResponse(serialize_product(row))
@@ -795,6 +1116,18 @@ async def api_delete(request: Request):
     return JSONResponse({"ok": True})
 
 
+async def api_close_day(request: Request):
+    run_nightly_backup_and_reset()
+    return JSONResponse({"ok": True})
+
+
+async def download_backup(request: Request):
+    latest_file = os.path.join(BACKUP_DIR, "giacenze_latest.csv")
+    if not os.path.exists(latest_file):
+        run_nightly_backup_and_reset()
+    return FileResponse(latest_file, media_type="text/csv", filename="giacenze_backup.csv")
+
+
 routes = [
     Route("/login", login_page, methods=["GET"]),
     Route("/login", login_submit, methods=["POST"]),
@@ -806,8 +1139,11 @@ routes = [
     Route("/api/import-csv", api_import_csv, methods=["POST"]),
     Route("/api/qty/{pid:int}", api_qty, methods=["POST"]),
     Route("/api/esposto/{pid:int}", api_esposto, methods=["POST"]),
+    Route("/api/note/{pid:int}", api_note, methods=["POST"]),
     Route("/api/enrich/{pid:int}", api_enrich, methods=["POST"]),
     Route("/api/delete/{pid:int}", api_delete, methods=["POST"]),
+    Route("/api/close-day", api_close_day, methods=["POST"]),
+    Route("/api/backup/download", download_backup, methods=["GET"]),
 ]
 
 app = Starlette(routes=routes, middleware=[Middleware(AuthMiddleware)])
