@@ -1,0 +1,8 @@
+starlette
+uvicorn
+python-multipart
+selectolax
+requests
+beautifulsoup4
+itsdangerous
+werkzeug
