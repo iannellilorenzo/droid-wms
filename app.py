@@ -696,6 +696,10 @@ function renderList() {
     const specsRows = Object.entries(p.specs || {})
       .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
 
+    const pricePill = p.meta.prezzo !== null
+      ? `<span class="price-pill">€ ${Number.isInteger(p.meta.prezzo) ? p.meta.prezzo : p.meta.prezzo.toFixed(2)}</span>`
+      : '';
+
     return `
     <div class="card" id="card-${p.id}">
       <div style="font-weight:700; font-size:15px; margin-bottom:6px;">${esc(p.titolo)}</div>
@@ -719,7 +723,7 @@ function renderList() {
         </div>
 
         <div class="row" style="gap:6px; flex-wrap:wrap; justify-content:flex-end;">
-          ${p.meta.prezzo !== null ? `<span class="price-pill">€ ${Number.isInteger(p.meta.prezzo) ? p.meta.prezzo : p.meta.prezzo.toFixed(2)}</span>` : ''}
+          ${pricePill}
           <button type="button" class="toggle ${p.esposto ? 'on' : 'off'}" onclick="toggleEsposto(${p.id})">
             ${p.esposto ? 'ESPOSTO: SÌ' : 'ESPOSTO: NO'}
           </button>
