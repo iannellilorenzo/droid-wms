@@ -1,3 +1,4 @@
+
 # 📦 droid-wms (v1.0)
 
 Gestionale leggero e self-hosted per il controllo rapido di giacenze ed esposizione in corsia, progettato per girare interamente in locale su uno smartphone Android dedicato e accessibile via browser da qualsiasi dispositivo mobile.
