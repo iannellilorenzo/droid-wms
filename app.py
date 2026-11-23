@@ -724,8 +724,8 @@ function levenshtein(a, b) {
 function tokenizeSmart(str) {
   return String(str || '')
     .toLowerCase()
-    .replace(/([a-zà-ÿ])(\d)/gi, '$1 $2')
-    .replace(/(\d)([a-zà-ÿ])/gi, '$1 $2')
+    .replace(/([a-zà-ÿ])(\\d)/gi, '$1 $2')
+    .replace(/(\\d)([a-zà-ÿ])/gi, '$1 $2')
     .split(/[^a-z0-9à-ÿ]+/)
     .filter(Boolean);
 }
@@ -735,8 +735,8 @@ function scoreProductSearch(p, rawQ) {
   if (!q) return 1;
 
   // 1. Ricerca puramente numerica -> Codice PIM / EAN / numero esatto
-  if (/^[\d\s-]+$/.test(q)) {
-    const digits = q.replace(/\D/g, '');
+  if (/^[\\d\\s-]+$/.test(q)) {
+    const digits = q.replace(/\\D/g, '');
     if (!digits) return 0;
     const ean13 = digits.length === 12 ? '0' + digits : digits;
     if (p.codice_mw && p.codice_mw.includes(digits)) return 100;
@@ -759,7 +759,7 @@ function scoreProductSearch(p, rawQ) {
 
   for (const qt of qTokens) {
     // Token numerico (es. "3", "5", "16", "512"): match esatto obbligatorio, zero fuzzy
-    if (/^\d+$/.test(qt)) {
+    if (/^\\d+$/.test(qt)) {
       if (modelSet.has(qt)) {
         totalScore += 15;
       } else if (noteSet.has(qt)) {
@@ -776,7 +776,7 @@ function scoreProductSearch(p, rawQ) {
 
     for (let idx = 0; idx < allWords.length; idx++) {
       const w = allWords[idx];
-      if (/^\d+$/.test(w)) continue;
+      if (/^\\d+$/.test(w)) continue;
       const inModel = idx < modelWords.length;
       const weight = inModel ? 1.0 : 0.5;
 
