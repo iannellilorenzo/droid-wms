@@ -272,8 +272,11 @@ def extract_structured_meta(titolo, specs):
     is_dedicated = any(kw in gpu_check for kw in dedicated_keywords)
     gpu_tipo = "Dedicata" if is_dedicated else "Integrata"
 
+    modello = (specs.get("Modello") or "").strip()
+
     return {
         "marchio": marchio or "Altro",
+        "modello": modello,
         "prezzo": prezzo,
         "schermo": schermo,
         "ram": ram,
@@ -636,11 +639,105 @@ function esc(str) {
   return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
-function renderList() {
-  const q = document.getElementById('searchInput').value.trim().toLowerCase();
-  const qDigits = q.replace(/\D/g, '');
-  const qEan13 = qDigits.length === 12 ? '0' + qDigits : qDigits;
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const v0 = Array.from({length: b.length + 1}, (_, i) => i);
+  const v1 = new Array(b.length + 1);
+  for (let i = 0; i < a.length; i++) {
+    v1[0] = i + 1;
+    for (let j = 0; j < b.length; j++) {
+      const cost = a[i] === b[j] ? 0 : 1;
+      v1[j + 1] = Math.min(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) v0[j] = v1[j];
+  }
+  return v1[b.length];
+}
 
+function tokenizeSmart(str) {
+  return String(str || '')
+    .toLowerCase()
+    .replace(/([a-zà-ÿ])(\d)/gi, '$1 $2')
+    .replace(/(\d)([a-zà-ÿ])/gi, '$1 $2')
+    .split(/[^a-z0-9à-ÿ]+/)
+    .filter(Boolean);
+}
+
+function scoreProductSearch(p, rawQ) {
+  const q = rawQ.trim().toLowerCase();
+  if (!q) return 1;
+
+  // 1. Ricerca puramente numerica -> Codice PIM / EAN / numero esatto
+  if (/^[\d\s-]+$/.test(q)) {
+    const digits = q.replace(/\D/g, '');
+    if (!digits) return 0;
+    const ean13 = digits.length === 12 ? '0' + digits : digits;
+    if (p.codice_mw && p.codice_mw.includes(digits)) return 100;
+    if (p.ean && (p.ean.includes(digits) || p.ean.includes(ean13))) return 100;
+    const titleWords = tokenizeSmart(`${p.titolo} ${p.note || ''}`);
+    return titleWords.includes(digits) ? 60 : 0;
+  }
+
+  // 2. Ricerca testuale / mista -> Fuzzy Ibrido per token
+  const qTokens = tokenizeSmart(q);
+  if (!qTokens.length) return 1;
+
+  const modelWords = tokenizeSmart(`${p.meta.marchio || ''} ${p.meta.modello || ''} ${p.titolo}`);
+  const noteWords = tokenizeSmart(p.note || '');
+  const allWords = [...modelWords, ...noteWords];
+
+  let totalScore = 0;
+
+  for (const qt of qTokens) {
+    // Token numerico (es. "3", "5", "16", "512"): match esatto obbligatorio, zero fuzzy
+    if (/^\d+$/.test(qt)) {
+      if (modelWords.includes(qt)) {
+        totalScore += 15;
+      } else if (noteWords.includes(qt)) {
+        totalScore += 6;
+      } else {
+        return 0;
+      }
+      continue;
+    }
+
+    // Token testuale: match esatto, prefisso o Levenshtein (typo tolerance)
+    const maxDist = qt.length >= 7 ? 2 : (qt.length >= 4 ? 1 : 0);
+    let bestTokenScore = 0;
+
+    for (let idx = 0; idx < allWords.length; idx++) {
+      const w = allWords[idx];
+      if (/^\d+$/.test(w)) continue;
+      const inModel = idx < modelWords.length;
+      const weight = inModel ? 1.0 : 0.5;
+
+      if (w === qt) {
+        bestTokenScore = Math.max(bestTokenScore, 12 * weight);
+        break;
+      }
+      if (w.startsWith(qt) && qt.length >= 2) {
+        bestTokenScore = Math.max(bestTokenScore, 9 * weight);
+        continue;
+      }
+      if (maxDist > 0 && Math.abs(w.length - qt.length) <= maxDist) {
+        const dist = levenshtein(qt, w);
+        if (dist <= maxDist) {
+          bestTokenScore = Math.max(bestTokenScore, (8 - dist * 2) * weight);
+        }
+      }
+    }
+
+    if (bestTokenScore === 0) return 0;
+    totalScore += bestTokenScore;
+  }
+
+  return totalScore;
+}
+
+function renderList() {
+  const q = document.getElementById('searchInput').value;
   const sortBy = document.getElementById('sortSelect').value;
   const quick = document.getElementById('quickFilter').value;
   const fBrand = document.getElementById('fBrand').value;
@@ -650,35 +747,35 @@ function renderList() {
   const fSsd = document.getElementById('fSsd').value;
   const fMaxPrice = parseFloat(document.getElementById('fMaxPrice').value);
 
-  let filtered = PRODUCTS.filter(p => {
-    if (q) {
-      const matchMw = p.codice_mw && p.codice_mw.includes(q);
-      const matchEan = p.ean && (p.ean.includes(q) || (qEan13 && p.ean.includes(qEan13)));
-      const matchTitle = p.titolo.toLowerCase().includes(q);
-      const matchNote = (p.note || '').toLowerCase().includes(q);
-      if (!matchMw && !matchEan && !matchTitle && !matchNote) return false;
-    }
-    if (quick === 'esposti' && !p.esposto) return false;
-    if (quick === 'non_esposti' && p.esposto) return false;
-    if (quick === 'changed' && p.delta === 0) return false;
-    if (fBrand && p.meta.marchio !== fBrand) return false;
-    if (fScreen && p.meta.schermo !== fScreen) return false;
-    if (fGpu && p.meta.gpu_tipo !== fGpu) return false;
-    if (fRam && p.meta.ram !== fRam) return false;
-    if (fSsd && p.meta.ssd !== fSsd) return false;
-    if (!isNaN(fMaxPrice) && (p.meta.prezzo === null || p.meta.prezzo > fMaxPrice)) return false;
-    return true;
-  });
+  const scored = [];
+  for (const p of PRODUCTS) {
+    if (quick === 'esposti' && !p.esposto) continue;
+    if (quick === 'non_esposti' && p.esposto) continue;
+    if (quick === 'changed' && p.delta === 0) continue;
+    if (fBrand && p.meta.marchio !== fBrand) continue;
+    if (fScreen && p.meta.schermo !== fScreen) continue;
+    if (fGpu && p.meta.gpu_tipo !== fGpu) continue;
+    if (fRam && p.meta.ram !== fRam) continue;
+    if (fSsd && p.meta.ssd !== fSsd) continue;
+    if (!isNaN(fMaxPrice) && (p.meta.prezzo === null || p.meta.prezzo > fMaxPrice)) continue;
 
-  filtered.sort((a, b) => {
-    if (sortBy === 'esposto') return (b.esposto - a.esposto) || a.titolo.localeCompare(b.titolo);
-    if (sortBy === 'price_asc') return (a.meta.prezzo ?? 999999) - (b.meta.prezzo ?? 999999);
-    if (sortBy === 'price_desc') return (b.meta.prezzo ?? -1) - (a.meta.prezzo ?? -1);
-    if (sortBy === 'qty_desc') return b.giacenza - a.giacenza;
-    if (sortBy === 'qty_asc') return a.giacenza - b.giacenza;
-    if (sortBy === 'name_asc') return a.titolo.localeCompare(b.titolo);
+    const score = scoreProductSearch(p, q);
+    if (score > 0) scored.push({p, score});
+  }
+
+  scored.sort((a, b) => {
+    if (q.trim() && b.score !== a.score) return b.score - a.score;
+    const pa = a.p, pb = b.p;
+    if (sortBy === 'esposto') return (pb.esposto - pa.esposto) || pa.titolo.localeCompare(pb.titolo);
+    if (sortBy === 'price_asc') return (pa.meta.prezzo ?? 999999) - (pb.meta.prezzo ?? 999999);
+    if (sortBy === 'price_desc') return (pb.meta.prezzo ?? -1) - (pa.meta.prezzo ?? -1);
+    if (sortBy === 'qty_desc') return pb.giacenza - pa.giacenza;
+    if (sortBy === 'qty_asc') return pa.giacenza - pb.giacenza;
+    if (sortBy === 'name_asc') return pa.titolo.localeCompare(pb.titolo);
     return 0;
   });
+
+  const filtered = scored.map(x => x.p);
 
   document.getElementById('count-lbl').textContent = `(${filtered.length}/${PRODUCTS.length})`;
 
