@@ -436,7 +436,7 @@ HTML_SPA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.4.0</title>
+<title>droid-wms v2.5.0</title>
 <meta name="theme-color" content="#09090b">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -852,7 +852,7 @@ function renderList() {
   });
 
   const filtered = scored.map(x => x.p);
-  try { renderKpiUI(); } catch (err) { console.error('KPI error:', err); }
+  try { renderKpiUI(); } catch (err) { document.getElementById('kpiBar').innerHTML = '<div style="color:#fb7185;font-size:12px;">Errore KPI: ' + err.message + '</div>'; }
   document.getElementById('count-lbl').textContent = `(${filtered.length}/${PRODUCTS.length})`;
 
   const container = document.getElementById('productList');
@@ -870,7 +870,7 @@ function renderList() {
       .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
 
     const pricePill = p.meta.prezzo !== null
-      ? `<span class="price-pill">€ ${Number.isInteger(p.meta.prezzo) ? p.meta.prezzo : p.meta.prezzo.toFixed(2)}</span>`
+      ? `<span class="price-pill">€ ${Number.isInteger(p.meta.prezzo) ? p.meta.prezzo : p.meta.prezzo.toFixed(2)}<button type="button" onclick="editPrice(${p.id})" title="Modifica prezzo" style="background:transparent;border:none;color:var(--muted);padding:2px 4px;margin-left:4px;cursor:pointer;vertical-align:middle;display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></button></span>`
       : '';
 
     return `
@@ -989,6 +989,50 @@ async function toggleEsposto(id) {
   }
 }
 
+async function editPrice(id) {
+  const idx = PRODUCTS.findIndex(x => x.id === id);
+  if (idx === -1) return;
+  const p = PRODUCTS[idx];
+  const curr = p.meta.prezzo !== null && p.meta.prezzo !== undefined ? String(p.meta.prezzo).replace('.', ',') : '';
+  const input = prompt(`Nuovo prezzo (€) per ${p.titolo}:`, curr);
+  if (input === null) return;
+
+  const trimmed = input.trim();
+  let parsed = null;
+  if (trimmed !== '') {
+    const num = parseFloat(trimmed.replace(/[^0-9.,]/g, '').replace(',', '.'));
+    if (isNaN(num) || num < 0) {
+      showToast('Prezzo non valido');
+      return;
+    }
+    parsed = Math.round(num * 100) / 100;
+  }
+
+  const prevPrice = p.meta.prezzo;
+  p.meta.prezzo = parsed;
+  renderList();
+
+  try {
+    const res = await fetch(`/api/price/${id}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prezzo: parsed})
+    });
+    if (!res.ok) throw new Error();
+    const updated = await res.json();
+    if (updated && updated.id) {
+      const currIdx = PRODUCTS.findIndex(x => x.id === id);
+      if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
+      renderList();
+    }
+    showToast('Prezzo aggiornato');
+  } catch (e) {
+    p.meta.prezzo = prevPrice;
+    renderList();
+    showToast('Errore salvataggio prezzo');
+  }
+}
+
 async function saveNote(id) {
   const note = document.getElementById(`note-${id}`).value;
   const res = await fetch(`/api/note/${id}`, {
@@ -1090,6 +1134,10 @@ function toggleRestockFilter() {
   renderList();
 }
 
+function escKpi(v) {
+  return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function renderKpiUI() {
   let totEsposti = 0, totPezzi = 0, totDelta = 0, totRestock = 0;
   const byBrand = {};
@@ -1168,15 +1216,15 @@ function renderKpiUI() {
       const info = byBrand[br];
       const val = info[field];
       const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
-      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', null, null)">${esc(br)}: <strong>${val}</strong></button>`;
+      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', null, null)">${escKpi(br)}: <strong>${val}</strong></button>`;
 
       const hasComp = info.cats.Computer.count > 0;
       const hasTab = info.cats.Tablet.count > 0;
       if (hasComp && hasTab) {
         const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
         const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', 'Computer', null)">↳ ${esc(br)} Computer: <strong>${info.cats.Computer[field]}</strong></button>`;
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', 'Tablet', null)">↳ ${esc(br)} Tablet: <strong>${info.cats.Tablet[field]}</strong></button>`;
+        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', 'Computer', null)">↳ ${escKpi(br)} Computer: <strong>${info.cats.Computer[field]}</strong></button>`;
+        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', 'Tablet', null)">↳ ${escKpi(br)} Tablet: <strong>${info.cats.Tablet[field]}</strong></button>`;
       }
     }
   } else if (KPI_TAB === 'variazioni') {
@@ -1190,15 +1238,15 @@ function renderKpiUI() {
     for (const br of brands) {
       const info = byBrand[br];
       const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
-      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', null, null)">${esc(br)}: <strong style="color:${colD(info.delta)}">${fmtD(info.delta)}</strong></button>`;
+      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', null, null)">${escKpi(br)}: <strong style="color:${colD(info.delta)}">${fmtD(info.delta)}</strong></button>`;
 
       const hasComp = info.cats.Computer.count > 0;
       const hasTab = info.cats.Tablet.count > 0;
       if (hasComp && hasTab) {
         const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
         const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', 'Computer', null)">↳ ${esc(br)} Computer: <strong style="color:${colD(info.cats.Computer.delta)}">${fmtD(info.cats.Computer.delta)}</strong></button>`;
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', 'Tablet', null)">↳ ${esc(br)} Tablet: <strong style="color:${colD(info.cats.Tablet.delta)}">${fmtD(info.cats.Tablet.delta)}</strong></button>`;
+        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', 'Computer', null)">↳ ${escKpi(br)} Computer: <strong style="color:${colD(info.cats.Computer.delta)}">${fmtD(info.cats.Computer.delta)}</strong></button>`;
+        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', 'Tablet', null)">↳ ${escKpi(br)} Tablet: <strong style="color:${colD(info.cats.Tablet.delta)}">${fmtD(info.cats.Tablet.delta)}</strong></button>`;
       }
     }
   }
@@ -1551,7 +1599,54 @@ async def pwa_icon(request: Request):
     return Response(svg, media_type="image/svg+xml")
 
 
+
+async def api_update_price(request: Request):
+    import json
+    pid = int(request.path_params["pid"])
+    data = await request.json()
+    raw_val = data.get("prezzo")
+    new_price = None
+    if raw_val is not None and str(raw_val).strip() != "":
+        cleaned = re.sub(r"[^0-9.,]", "", str(raw_val)).replace(",", ".")
+        try:
+            new_price = round(float(cleaned), 2)
+        except ValueError:
+            return JSONResponse({"error": "Prezzo non valido"}, status_code=400)
+
+    conn = get_db()
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(prodotti)").fetchall()]
+        row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "Prodotto non trovato"}, status_code=404)
+
+        if "prezzo" in cols:
+            conn.execute("UPDATE prodotti SET prezzo = ? WHERE id = ?", (new_price, pid))
+
+        for spec_col in ("specifiche", "specs", "meta_json", "dati"):
+            if spec_col in cols:
+                try:
+                    spec_dict = json.loads(row[spec_col] or "{}")
+                except Exception:
+                    spec_dict = {}
+                if isinstance(spec_dict, dict):
+                    if new_price is not None:
+                        spec_dict["Prezzo"] = f"{new_price:.2f}".replace(".", ",") + " €"
+                    else:
+                        spec_dict.pop("Prezzo", None)
+                    conn.execute(f"UPDATE prodotti SET {spec_col} = ? WHERE id = ?", (json.dumps(spec_dict, ensure_ascii=False), pid))
+                break
+
+        conn.commit()
+        updated = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
+        if "scrape_mw" in globals():
+            return JSONResponse(globals()["scrape_mw"](updated))
+        return JSONResponse({"ok": True, "prezzo": new_price})
+    finally:
+        conn.close()
+
 routes = [
+    Route("/api/price/{pid:int}", api_update_price, methods=["POST"]),
     Route("/manifest.json", pwa_manifest, methods=["GET"]),
     Route("/sw.js", pwa_sw, methods=["GET"]),
     Route("/icon.svg", pwa_icon, methods=["GET"]),
