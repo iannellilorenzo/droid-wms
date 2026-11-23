@@ -490,7 +490,7 @@ HTML_SPA = r"""<!doctype html>
   button.qty { width:42px; height:42px; font-size:20px; padding:0; }
   .badge { display:inline-block; padding:3px 8px; border-radius:6px; font-size:12px; font-weight:600; background:#27272a; color:var(--muted); margin-right:5px; margin-bottom:4px; }
   .badge.delta-pos { background:rgba(16,185,129,0.2); color:#34d399; border:1px solid #10b981; font-weight:800; }
-  .badge.delta-neg { background:rgba(244,63,94,0.2); color:#fb7185; border:1px solid #e11d48; font-weight:800; }
+  .badge.delta-neg { background:rgba(56,189,248,0.18); color:#38bdf8; border:1px solid #0ea5e9; font-weight:800; }
   .specs { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; }
   .specs td { padding:5px 4px; border-bottom:1px solid #222226; vertical-align:top; }
   .specs td:first-child { color:var(--muted); width:42%; }
@@ -969,7 +969,7 @@ function renderKpiUI() {
     totDelta += p.delta;
   }
 
-  const deltaColor = totDelta > 0 ? '#34d399' : (totDelta < 0 ? '#fb7185' : 'var(--text)');
+  const deltaColor = totDelta > 0 ? '#34d399' : (totDelta < 0 ? '#38bdf8' : 'var(--text)');
   const deltaStr = totDelta > 0 ? `+${totDelta}` : `${totDelta}`;
   const isRestockActive = document.getElementById('quickFilter').value === 'restock';
 
@@ -1021,7 +1021,7 @@ function renderKpiUI() {
     case 'variazioni': {
       titleText = 'Variazioni oggi (Intel / Marche)';
       const fmtD = d => d > 0 ? `+${d}` : `${d}`;
-      const colD = d => d > 0 ? '#34d399' : (d < 0 ? '#fb7185' : 'var(--muted)');
+      const colD = d => d > 0 ? '#34d399' : (d < 0 ? '#38bdf8' : 'var(--muted)');
 
       const selIntel = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.cpu === 'Intel';
       chipsHtml += `<button type="button" class="kpi-chip ${selIntel ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', null, null, 'Intel')">Intel: <strong style="color:${colD(intelDelta)}">${fmtD(intelDelta)}</strong></button>`;
