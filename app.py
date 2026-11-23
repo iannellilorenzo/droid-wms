@@ -74,6 +74,8 @@ def get_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA mmap_size=67108864")
     return conn
 
 
@@ -436,7 +438,7 @@ HTML_SPA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.5.0</title>
+<title>droid-wms v2.6.0</title>
 <meta name="theme-color" content="#09090b">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -893,7 +895,7 @@ function renderKpiUI() {
       <span>Variazioni oggi ▾</span><strong style="color:${deltaColor}">${deltaStr}</strong>
     </button>
     <button type="button" class="kpi-btn alert ${isRestockActive ? 'active' : ''}" onclick="toggleRestockFilter()">
-      <span>Da riassortire</span><strong>${totRestock}</strong>
+      <span>Da riassortire:</span><strong>${totRestock}</strong>
     </button>
   `;
 
@@ -958,6 +960,32 @@ function renderKpiUI() {
     </div>
     <div class="kpi-chips">${chipsHtml}</div>
   `;
+}
+
+let _searchTimer = null;
+function debouncedRenderList() {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(renderList, 70);
+}
+
+function updateSingleCard(id) {
+  try { renderKpiUI(); } catch (err) {}
+  const activeFilter = document.getElementById('quickFilter').value;
+  if (activeFilter !== 'all' || KPI_SUBFILTER) {
+    renderList();
+    return;
+  }
+  const p = PRODUCTS.find(x => x.id === id);
+  const el = document.getElementById(`card-${id}`);
+  if (!p || !el) {
+    renderList();
+    return;
+  }
+  if (typeof renderCard === 'function') {
+    el.outerHTML = renderCard(p);
+  } else {
+    renderList();
+  }
 }
 
 function renderList() {
@@ -1093,7 +1121,7 @@ async function updateQty(id, delta) {
   p._pendingQty = (p._pendingQty || 0) + 1;
   p.giacenza = Math.max(0, p.giacenza + delta);
   p.delta = p.giacenza - p.giacenza_base;
-  renderList();
+  updateSingleCard(id);
 
   try {
     const res = await fetch(`/api/qty/${id}`, {
@@ -1107,13 +1135,13 @@ async function updateQty(id, delta) {
     if (p._pendingQty === 0) {
       const currIdx = PRODUCTS.findIndex(x => x.id === id);
       if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
-      renderList();
+      updateSingleCard(id);
     }
   } catch (e) {
     p._pendingQty = Math.max(0, (p._pendingQty || 1) - 1);
     p.giacenza = prevQty;
     p.delta = prevDelta;
-    renderList();
+    updateSingleCard(id);
     showToast('Errore di rete: giacenza ripristinata');
   }
 }
@@ -1126,7 +1154,7 @@ async function toggleEsposto(id) {
 
   p._pendingEsp = (p._pendingEsp || 0) + 1;
   p.esposto = p.esposto ? 0 : 1;
-  renderList();
+  updateSingleCard(id);
 
   try {
     const res = await fetch(`/api/esposto/${id}`, { method: 'POST' });
@@ -1136,12 +1164,12 @@ async function toggleEsposto(id) {
     if (p._pendingEsp === 0) {
       const currIdx = PRODUCTS.findIndex(x => x.id === id);
       if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
-      renderList();
+      updateSingleCard(id);
     }
   } catch (e) {
     p._pendingEsp = Math.max(0, (p._pendingEsp || 1) - 1);
     p.esposto = prevEsposto;
-    renderList();
+    updateSingleCard(id);
     showToast('Errore di rete: stato esposto ripristinato');
   }
 }
@@ -1167,7 +1195,7 @@ async function editPrice(id) {
 
   const prevPrice = p.meta.prezzo;
   p.meta.prezzo = parsed;
-  renderList();
+  updateSingleCard(id);
 
   try {
     const res = await fetch(`/api/price/${id}`, {
@@ -1180,12 +1208,12 @@ async function editPrice(id) {
     if (updated && updated.id) {
       const currIdx = PRODUCTS.findIndex(x => x.id === id);
       if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
-      renderList();
+      updateSingleCard(id);
     }
     showToast('Prezzo aggiornato');
   } catch (e) {
     p.meta.prezzo = prevPrice;
-    renderList();
+    updateSingleCard(id);
     showToast('Errore salvataggio prezzo');
   }
 }
@@ -1584,7 +1612,32 @@ async def pwa_manifest(request: Request):
 
 
 async def pwa_sw(request: Request):
-    js = "self.addEventListener('install', () => self.skipWaiting()); self.addEventListener('fetch', () => {});"
+    js = """const CACHE = 'droid-wms-v260';
+self.addEventListener('install', e => {
+  self.skipWaiting();
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/manifest.json', '/icon.svg'])).catch(() => {}));
+});
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+self.addEventListener('fetch', e => {
+  if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  if (url.pathname === '/' || url.pathname === '/api/products') {
+    e.respondWith(
+      fetch(e.request).then(res => {
+        if (res.ok) {
+          const clone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
+        }
+        return res;
+      }).catch(() => caches.match(e.request))
+    );
+  }
+});"""
     return Response(js, media_type="application/javascript")
 
 
