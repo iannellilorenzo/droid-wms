@@ -1809,7 +1809,7 @@ async def pwa_manifest(request: Request):
 
 
 async def pwa_sw(request: Request):
-    js = """const CACHE = 'droid-wms-v270';
+    js = """const CACHE = 'droid-wms-v271';
 self.addEventListener('install', e => {
   self.skipWaiting();
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/manifest.json', '/icon.svg'])).catch(() => {}));
