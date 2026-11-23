@@ -1,67 +1,72 @@
-
-# ⚡ droid-wms (v2.7.0)
+# ⚡ droid-wms (v2.8.0)
 
 Gestionale inventario self-hosted ad alte prestazioni progettato per girare in locale su uno smartphone Android dedicato e accessibile via browser come **Progressive Web App (PWA)** nativa.
 
-Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.7.0** integra un **Esportatore Report Venduto (Target Italia)** con selezione dinamica per marchio o processore Intel e copia istantanea nella clipboard di sistema, affiancato alle ottimizzazioni architetturali della v2.6.0 (aggiornamento DOM chirurgico della singola card, debounce intelligente sulla ricerca, Service Worker offline-ready e tuning SQLite in RAM), ai **KPI interattivi con drill-down**, alla **modifica rapida dei prezzi** e alla **pulizia automatica a fine giornata** dei prodotti esauriti.
+Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.8.0** consolida l'intero ciclo operativo di corsia: **Esportatore Report Venduto (Target Italia)** con filtro dinamico per marchio o processore Intel e copia istantanea nella clipboard di sistema, **KPI interattivi con drill-down**, **modifica rapida dei prezzi**, **pulizia automatica notturna dei prodotti esauriti**, caching HTTP tramite **`ETag` (`304 Not Modified`)**, **scraping asincrono non bloccante**, **Event Delegation centralizzata** e badge azzurri ad alto contrasto (`#38bdf8`) per le variazioni negative.
 
-## 🛠️ Dev Stack & Architettura (v2.7.0)
+## 🛠️ Dev Stack & Architettura (v2.8.0)
 
 L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato in micro-server always-on:
 
 * **Host & Runtime:** Android + **Termux** (con `termux-wake-lock`, `Termux:Boot` per l'avvio automatico e `proot` chroot per la risoluzione DNS nativa).
 
-* **Backend:** **Python 3** + **Starlette** servito in produzione su **Uvicorn** (`--no-access-log` per ridurre le scritture su flash), con `GZipMiddleware` per comprimere i payload JSON/HTML fino all'80% e thread daemon in background con fuso orario `Europe/Rome` (`tzdata`).
+* **Backend Asincrono & Caching HTTP:** **Python 3** + **Starlette** servito in produzione su **Uvicorn** (`--no-access-log` per ridurre le scritture su flash), con `GZipMiddleware` (compressione payload fino all'80%), **headers `ETag` (`304 Not Modified`)** su `GET /api/products` per azzerare il traffico dati quando l'inventario è invariato, e thread daemon in background con fuso orario `Europe/Rome` (`tzdata`).
 
-* **Frontend, PWA Offline-First & Optimistic UI:** **Single-Page App (SPA)** installabile come **PWA** (`/manifest.json`, `/sw.js`, `/icon.svg`) con strategia **Network-First + CacheStorage fallback** (apre l'interfaccia e l'ultimo inventario salvato anche in assenza temporanea di segnale). Caricamento unico del catalogo con indice pre-tokenizzato in RAM, **aggiornamento DOM chirurgico della singola card (`updateSingleCard`)** senza re-render globale e risposte **Optimistic UI a 0 ms** con rollback automatico su errore di rete.
+* **Scraping Non Bloccante & Regex Pre-compilate:** Pipeline ibrida **Regex pre-compilate + `selectolax`** (parser HTML nativo in C) eseguita su thread dedicato tramite `asyncio.to_thread()` con rimozione preventiva delle immagini Base64, mantenendo l'event loop sempre libero durante la lettura dei link `qrc.mw`.
 
-* **Motore di Ricerca Fuzzy Ibrido & Debounce:** ricerca multi-token agnostica rispetto al brand con debounce a **70 ms**, tolleranza agli errori di battitura (distanza di **Levenshtein** + match per prefisso sulle parole) combinata ad **ancoraggio numerico rigoroso** (per evitare falsi positivi tra serie diverse, es. *Slim 3* vs *Slim 5*) e ordinamento dinamico per pertinenza.
+* **Frontend, PWA Offline-First & Event Delegation:** **Single-Page App (SPA)** installabile come **PWA** (`/manifest.json`, `/sw.js`, `/icon.svg`) con strategia **Network-First + CacheStorage fallback** (`droid-wms-v280`). Gestione centralizzata delle azioni tramite **Event Delegation (`data-action` + `switch/case`)**, comparatori pre-risolti fuori dal loop di ordinamento, wrapper di rete resiliente (`apiFetch`), **aggiornamento DOM chirurgico della singola card (`updateSingleCard`)** e risposte **Optimistic UI a 0 ms** con rollback automatico su errore di rete.
 
-* **Scraping Engine:** Pipeline ibrida **Regex + `selectolax`** (parser HTML nativo in C) con rimozione preventiva dei payload immagini Base64 per estrazione fulminea dai link `qrc.mw`.
+* **Motore di Ricerca Fuzzy Ibrido & Debounce:** Ricerca multi-token agnostica rispetto al brand con debounce a **70 ms**, tolleranza agli errori di battitura (distanza di **Levenshtein** + match per prefisso sulle parole) combinata ad **ancoraggio numerico rigoroso** (per evitare falsi positivi tra serie diverse, es. *Slim 3* vs *Slim 5*) e ordinamento dinamico per pertinenza.
 
-* **Database & Backup:** **SQLite3** (`inventario.db`) configurato in modalità **`WAL` (`Write-Ahead Logging`)** con `synchronous=NORMAL`, `temp_store=MEMORY` e `mmap_size=64MB` per mantenere indici e tabelle temporanee in RAM, affiancato da export automatici giornalieri in **CSV** (`backups/`).
+* **Database & Backup:** **SQLite3** (`inventario.db`) configurato in modalità **`WAL` (`Write-Ahead Logging`)** con chiusura deterministica delle connessioni (`contextlib.closing`), `synchronous=NORMAL`, `temp_store=MEMORY` e `mmap_size=64MB` per mantenere indici e tabelle temporanee in RAM, affiancato da export automatici giornalieri in **CSV** (`backups/`).
 
 * **Networking & Tunneling:** **ngrok** su dominio statico HTTPS con processi persistenti gestiti via **tmux**.
 
 * **Sicurezza:** Autenticazione protetta da hash **PBKDF2-SHA256** (`security.json`), rate-limiting anti-bruteforce in memoria e cookie firmati (`itsdangerous`) `HttpOnly` / `Secure` a persistenza estesa (10 anni con auto-rinnovo ad ogni richiesta).
 
-## ✨ Funzionalità (v2.7.0)
+## ✨ Funzionalità (v2.8.0)
 
 * **Esportatore Report Venduto (Target Italia) con Copia Automatica:**
+
   * Pulsante dedicato **📋 Report** nell'header per generare il riepilogo giornaliero dei prodotti venduti (`delta < 0`) nel formato standard richiesto per il report promoter.
-  * **Filtro Dinamico Marchio & CPU:** permette di selezionare con un tap **Intel** (tutte le vendite di dispositivi con processore Intel di qualsiasi brand) oppure una specifica marca rilevata nel catalogo (**Lenovo**, **HP**, **ASUS**, ecc.).
-  * **Clipboard & Persistenza:** copia istantaneamente il testo formattato negli appunti di sistema (con fallback universale per PWA/WebView) e memorizza in `localStorage` anagrafica promoter, punto vendita e orario turno, compilando in automatico la data odierna (`GG/MM/AA`).
+
+  * **Filtro Dinamico Marchio & CPU:** Permette di selezionare con un tap **Intel** (tutte le vendite di dispositivi con processore Intel di qualsiasi brand) oppure una specifica marca rilevata nel catalogo (**Lenovo**, **HP**, **ASUS**, ecc.).
+
+  * **Clipboard & Persistenza:** Copia istantaneamente il testo formattato negli appunti di sistema (con fallback universale per PWA/WebView) e memorizza in `localStorage` anagrafica promoter, punto vendita e orario turno, compilando in automatico la data odierna (`GG/MM/AA`).
 
 * **Bottoni KPI Interattivi & Drill-Down Dinamico:**
-  * **Esposti & Pezzi totali:** toccando i rispettivi pulsanti si apre un pannello di dettaglio suddiviso dinamicamente per **Marca** (es. *Lenovo*, *HP*, *ASUS*, ecc.) e, per i brand multi-categoria, ulteriormente ripartito tra **Computer (Notebook / Fisso / AIO)** e **Tablet**. Il tap su una singola voce filtra all'istante le card sottostanti.
-  * **Variazioni oggi:** consente di filtrare al volo i movimenti giornalieri per **CPU Intel** (trasversale su tutte le marche) oppure per singolo **Brand** (includendo tutte le architetture: Intel, AMD, Snapdragon, ecc.) e sottocategoria.
-  * **Allerta Riassortimento (`Da riassortire: n`):** pulsante toggle rapido (disponibile anche nel menu *Stato rapido*) che isola i prodotti attualmente **esposti** con giacenza $\le 1$ (zero scorte residue in magazzino).
 
-* **Modifica Rapida Prezzo in Corsia:** icona matita dedicata accanto al prezzo su ogni scheda prodotto per aggiornare al volo il listino (`POST /api/price/{id}`) con aggiornamento istantaneo del database e delle specifiche.
+  * **Esposti & Pezzi totali:** Toccando i rispettivi pulsanti si apre un pannello di dettaglio suddiviso dinamicamente per **Marca** (es. *Lenovo*, *HP*, *ASUS*, ecc.) e, per i brand multi-categoria, ulteriormente ripartito tra **Computer (Notebook / Fisso / AIO)** e **Tablet**. Il tap su una singola voce filtra all'istante le card sottostanti.
 
-* **Chiusura Giornata, Backup & Pulizia Esauriti (`00:00`):** ogni notte a mezzanotte (`Europe/Rome`) salva un report CSV completo in `backups/giacenze_YYYY-MM-DD.csv` (scaricabile anche istantaneamente dall'header), **elimina definitivamente dal database tutti i prodotti rimasti a giacenza `0`** e consolida le giacenze attive come nuova base per il giorno successivo. Include anche un pulsante per la chiusura manuale anticipata.
+  * **Variazioni oggi:** Consente di filtrare al volo i movimenti giornalieri per **CPU Intel** (trasversale su tutte le marche) oppure per singolo **Brand** (includendo tutte le architetture: Intel, AMD, Snapdragon, ecc.) e sottocategoria.
 
-* **Installazione Web App Nativa (PWA):** installabile direttamente dalla schermata Home di Android via Chrome (*"Aggiungi a schermata Home"* / *"Installa app"*), con icona vettoriale dedicata, funzionamento offline-resilient e interfaccia full-screen priva di barra degli indirizzi.
+  * **Allerta Riassortimento (`Da riassortire: n`):** Pulsante toggle rapido (disponibile anche nel menu *Stato rapido*) che isola i prodotti attualmente **esposti** con giacenza $\le 1$ (zero scorte residue in magazzino).
 
-* **Ricerca Fuzzy Ibrida & Pertinenza:** supporta ricerche parziali, errori di battitura e codici senza spazi (es. `idepad slim3`, `lenvo`), distinguendo in modo esatto i numeri di serie/modello, il Codice PIM (6 cifre) e l'EAN-13.
+* **Modifica Rapida Prezzo in Corsia:** Icona matita dedicata accanto al prezzo (o pulsante `+ €` se non ancora impostato) su ogni scheda prodotto per aggiornare al volo il listino (`POST /api/price/{id}`) con aggiornamento istantaneo del database e delle specifiche.
 
-* **Interazioni Istantanee (Optimistic UI):** i tasti `+`, `-`, `ESPOSTO` e modifica prezzo aggiornano immediatamente la singola card senza attendere la latenza della rete mobile e senza perdere la posizione di scorrimento, sincronizzando il database in background.
+* **Chiusura Giornata, Backup & Pulizia Esauriti (`00:00`):** Ogni notte a mezzanotte (`Europe/Rome`) salva un report CSV completo in `backups/giacenze_YYYY-MM-DD.csv` (scaricabile anche istantaneamente dall'header), **elimina definitivamente dal database tutti i prodotti rimasti a giacenza `0`** e consolida le giacenze attive come nuova base per il giorno successivo. Include anche un pulsante per la chiusura manuale anticipata.
 
-* **Delta Giacenze Giornaliero (`+n` / `-n`):** confronto automatico tra la giacenza attuale e quella di inizio giornata (`giacenza_base`). Mostra un badge verde `+n` o rosso `-n` su ogni scheda modificata e scompare automaticamente se il conteggio torna in pari.
+* **Installazione Web App Nativa (PWA):** Installabile direttamente dalla schermata Home di Android via Chrome (*"Aggiungi a schermata Home"* / *"Installa app"*), con icona vettoriale dedicata, funzionamento offline-resilient e interfaccia full-screen priva di barra degli indirizzi.
 
-* **Note di Reparto:** campo testuale dedicato su ogni scheda prodotto per segnare informazioni rapide (es. *"ultimo esposto"*, *"manca scatola"*), completamente indicizzato nella ricerca.
+* **Ricerca Fuzzy Ibrida & Pertinenza:** Supporta ricerche parziali, errori di battitura e codici senza spazi (es. `idepad slim3`, `lenvo`), distinguendo in modo esatto i numeri di serie/modello, il Codice PIM (6 cifre) e l'EAN-13.
 
-* **Ordinamento & Filtri Dinamici Hardware / Prezzo:** ordinamento istantaneo (esposti, prezzo crescente/decrescente, giacenza, alfabetico) e filtri auto-popolati per **Marca**, **Diagonale Schermo**, **RAM**, **SSD**, **Scheda Video (Dedicata vs Integrata)**, **Prezzo Max** e stato variazioni.
+* **Interazioni Istantanee (Optimistic UI):** I tasti `+`, `-`, `ESPOSTO` e modifica prezzo aggiornano immediatamente la singola card senza attendere la latenza della rete mobile e senza perdere la posizione di scorrimento, sincronizzando il database in background.
 
-* **UI Mobile-First & Long-Press PIM:** pillola prezzo arrotondata (`€ PREZZO`) nella barra azioni e isolamento CSS (`user-select`) sulle 6 cifre del Codice PIM (`MW: xxxxxx`) per selezionare esattamente il numero al long-press su smartphone senza catturare spazi.
+* **Delta Giacenze Giornaliero ad Alto Contrasto (`+n` / `-n`):** Confronto automatico tra la giacenza attuale e quella di inizio giornata (`giacenza_base`). Mostra un badge verde (`+n`) per i carichi e un badge azzurro elettrico (`-n`, `#38bdf8`) per gli scarichi/vendite, distinguendosi chiaramente da `ESPOSTO: NO` e scomparendo automaticamente se il conteggio torna in pari.
 
-* **Scraping QR & Import CSV Massivo:** lettura automatica delle schede tecniche da link `qrc.mw` e aggiornamento massivo dell'inventario da file CSV.
+* **Note di Reparto:** Campo testuale dedicato su ogni scheda prodotto per segnare informazioni rapide (es. *"ultimo esposto"*, *"manca scatola"*), completamente indicizzato nella ricerca.
+
+* **Ordinamento & Filtri Dinamici Hardware / Prezzo:** Ordinamento istantaneo (esposti, prezzo crescente/decrescente, giacenza, alfabetico) e filtri auto-popolati per **Marca**, **Diagonale Schermo**, **RAM**, **SSD**, **Scheda Video (Dedicata vs Integrata)**, **Prezzo Max** e stato variazioni.
+
+* **UI Mobile-First & Long-Press PIM:** Pillola prezzo arrotondata (`€ PREZZO`) nella barra azioni e isolamento CSS (`user-select`) sulle 6 cifre del Codice PIM (`MW: xxxxxx`) per selezionare esattamente il numero al long-press su smartphone senza catturare spazi.
+
+* **Scraping QR & Import CSV Massivo:** Lettura automatica delle schede tecniche da link `qrc.mw` e aggiornamento massivo dell'inventario da file CSV.
 
 ## 📁 Struttura del Progetto
 
-```plaintext
+```text
 droid-wms/
-├── app.py              # Backend Starlette, PWA Service Worker offline-first, GZip, SQLite WAL/RAM, scheduler 00:00 e SPA
+├── app.py              # Backend Starlette, ETag 304, scraping async, PWA SW, SQLite WAL/RAM, scheduler 00:00 e SPA
 ├── requirements.txt    # Dipendenze Python (starlette, uvicorn, selectolax, tzdata, ecc.)
 ├── .gitignore          # Esclusione file sensibili, database, backup CSV e venv
 ├── README.md           # Documentazione del progetto
