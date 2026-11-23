@@ -1,10 +1,11 @@
-# ⚡ droid-wms (v2.6.0)
+
+# ⚡ droid-wms (v2.7.0)
 
 Gestionale inventario self-hosted ad alte prestazioni progettato per girare in locale su uno smartphone Android dedicato e accessibile via browser come **Progressive Web App (PWA)** nativa.
 
-Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.6.0** consolida tutte le ottimizzazioni architetturali (aggiornamento DOM chirurgico della singola card, debounce intelligente sulla ricerca, Service Worker offline-ready e tuning SQLite in RAM), affiancate ai **KPI interattivi con drill-down**, alla **modifica rapida dei prezzi** e alla **pulizia automatica a fine giornata** dei prodotti esauriti.
+Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.7.0** integra un **Esportatore Report Venduto (Target Italia)** con selezione dinamica per marchio o processore Intel e copia istantanea nella clipboard di sistema, affiancato alle ottimizzazioni architetturali della v2.6.0 (aggiornamento DOM chirurgico della singola card, debounce intelligente sulla ricerca, Service Worker offline-ready e tuning SQLite in RAM), ai **KPI interattivi con drill-down**, alla **modifica rapida dei prezzi** e alla **pulizia automatica a fine giornata** dei prodotti esauriti.
 
-## 🛠️ Dev Stack & Architettura (v2.6.0)
+## 🛠️ Dev Stack & Architettura (v2.7.0)
 
 L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato in micro-server always-on:
 
@@ -24,14 +25,16 @@ L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato
 
 * **Sicurezza:** Autenticazione protetta da hash **PBKDF2-SHA256** (`security.json`), rate-limiting anti-bruteforce in memoria e cookie firmati (`itsdangerous`) `HttpOnly` / `Secure` a persistenza estesa (10 anni con auto-rinnovo ad ogni richiesta).
 
-## ✨ Funzionalità (v2.6.0)
+## ✨ Funzionalità (v2.7.0)
+
+* **Esportatore Report Venduto (Target Italia) con Copia Automatica:**
+  * Pulsante dedicato **📋 Report** nell'header per generare il riepilogo giornaliero dei prodotti venduti (`delta < 0`) nel formato standard richiesto per il report promoter.
+  * **Filtro Dinamico Marchio & CPU:** permette di selezionare con un tap **Intel** (tutte le vendite di dispositivi con processore Intel di qualsiasi brand) oppure una specifica marca rilevata nel catalogo (**Lenovo**, **HP**, **ASUS**, ecc.).
+  * **Clipboard & Persistenza:** copia istantaneamente il testo formattato negli appunti di sistema (con fallback universale per PWA/WebView) e memorizza in `localStorage` anagrafica promoter, punto vendita e orario turno, compilando in automatico la data odierna (`GG/MM/AA`).
 
 * **Bottoni KPI Interattivi & Drill-Down Dinamico:**
-
   * **Esposti & Pezzi totali:** toccando i rispettivi pulsanti si apre un pannello di dettaglio suddiviso dinamicamente per **Marca** (es. *Lenovo*, *HP*, *ASUS*, ecc.) e, per i brand multi-categoria, ulteriormente ripartito tra **Computer (Notebook / Fisso / AIO)** e **Tablet**. Il tap su una singola voce filtra all'istante le card sottostanti.
-
   * **Variazioni oggi:** consente di filtrare al volo i movimenti giornalieri per **CPU Intel** (trasversale su tutte le marche) oppure per singolo **Brand** (includendo tutte le architetture: Intel, AMD, Snapdragon, ecc.) e sottocategoria.
-
   * **Allerta Riassortimento (`Da riassortire: n`):** pulsante toggle rapido (disponibile anche nel menu *Stato rapido*) che isola i prodotti attualmente **esposti** con giacenza $\le 1$ (zero scorte residue in magazzino).
 
 * **Modifica Rapida Prezzo in Corsia:** icona matita dedicata accanto al prezzo su ogni scheda prodotto per aggiornare al volo il listino (`POST /api/price/{id}`) con aggiornamento istantaneo del database e delle specifiche.
