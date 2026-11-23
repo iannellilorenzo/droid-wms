@@ -1,10 +1,10 @@
-# ⚡ droid-wms (v2.2.1)
+# ⚡ droid-wms (v2.4.0)
 
-Gestionale inventario self-hosted ad alte prestazioni progettato per girare in locale su uno smartphone Android dedicato e accessibile via browser da qualsiasi dispositivo mobile.
+Gestionale inventario self-hosted ad alte prestazioni progettato per girare in locale su uno smartphone Android dedicato e accessibile via browser come **Progressive Web App (PWA)** nativa.
 
-Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.2.1** porta la reattività dell'interfaccia a livello istantaneo grazie all'**Optimistic UI**, al motore di **ricerca Fuzzy Ibrido** con ancoraggio numerico, alla compressione **GZip** e all'ottimizzazione del database **SQLite in modalità WAL**.
+Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.4.0** trasforma la barra KPI in un sistema di **drill-down interattivo** per marca, tipologia dispositivo (Computer vs Tablet) e famiglia CPU (Intel), aggiungendo inoltre la **pulizia automatica a fine giornata** dei prodotti rimasti a giacenza zero.
 
-## 🛠️ Dev Stack & Architettura (v2.2.1)
+## 🛠️ Dev Stack & Architettura (v2.4.0)
 
 L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato in micro-server always-on:
 
@@ -12,7 +12,7 @@ L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato
 
 * **Backend:** **Python 3** + **Starlette** servito in produzione su **Uvicorn** (`--no-access-log` per ridurre le scritture su flash), con `GZipMiddleware` per comprimere i payload JSON/HTML fino all'80% e thread daemon in background con fuso orario `Europe/Rome` (`tzdata`).
 
-* **Frontend & Optimistic UI:** **Single-Page App (SPA)** in HTML/CSS/Vanilla JS puro: caricamento unico del catalogo con indice pre-tokenizzato in RAM, aggiornamenti **Optimistic UI a 0 ms** sui contatori e sugli stati (con sincronizzazione asincrona e rollback automatico in caso di assenza di rete).
+* **Frontend, PWA & Optimistic UI:** **Single-Page App (SPA)** installabile come **PWA** (`/manifest.json`, `/sw.js`, `/icon.svg`) con apertura `standalone` a schermo intero e tema scuro nativo. Caricamento unico del catalogo con indice pre-tokenizzato in RAM, aggregazione KPI interattiva e aggiornamenti **Optimistic UI a 0 ms** sui contatori e sugli stati (con rollback automatico in caso di assenza di rete).
 
 * **Motore di Ricerca Fuzzy Ibrido:** ricerca multi-token intelligente agnostica rispetto al brand, con tolleranza agli errori di battitura (distanza di **Levenshtein** + match per prefisso sulle parole) combinata ad **ancoraggio numerico rigoroso** (per evitare falsi positivi tra serie diverse, es. *Slim 3* vs *Slim 5*) e ordinamento dinamico per pertinenza.
 
@@ -24,15 +24,22 @@ L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato
 
 * **Sicurezza:** Autenticazione protetta da hash **PBKDF2-SHA256** (`security.json`), rate-limiting anti-bruteforce in memoria e cookie firmati (`itsdangerous`) `HttpOnly` / `Secure` a persistenza estesa (10 anni con auto-rinnovo ad ogni richiesta).
 
-## ✨ Funzionalità (v2.2.1)
+## ✨ Funzionalità (v2.4.0)
+
+* **Bottoni KPI Interattivi & Drill-Down Dinamico:**
+  * **Esposti & Pezzi totali:** toccando i rispettivi pulsanti si apre un pannello di dettaglio suddiviso dinamicamente per **Marca** (es. *Lenovo*, *HP*, *ASUS*, ecc.) e, per i brand multi-categoria, ulteriormente ripartito tra **Computer (Notebook / Fisso / AIO)** e **Tablet**. Il tap su una singola voce filtra all'istante le card sottostanti.
+  * **Variazioni oggi:** consente di filtrare al volo i movimenti giornalieri per **CPU Intel** (trasversale su tutte le marche) oppure per singolo **Brand** (includendo tutte le architetture: Intel, AMD, Snapdragon, ecc.) e sottocategoria.
+  * **Allerta Riassortimento (`Da riassortire`):** pulsante toggle rapido (disponibile anche nel menu *Stato rapido*) che isola i prodotti attualmente **esposti** con giacenza $\le 1$ (zero scorte residue in magazzino).
+
+* **Chiusura Giornata, Backup & Pulizia Esauriti (`00:00`):** ogni notte a mezzanotte (`Europe/Rome`) salva un report CSV completo in `backups/giacenze_YYYY-MM-DD.csv` (scaricabile anche istantaneamente dall'header), **elimina definitivamente dal database tutti i prodotti rimasti a giacenza `0`** e consolida le giacenze attive come nuova base per il giorno successivo. Include anche un pulsante per la chiusura manuale anticipata.
+
+* **Installazione Web App Nativa (PWA):** installabile direttamente dalla schermata Home di Android via Chrome (*"Aggiungi a schermata Home"* / *"Installa app"*), con icona vettoriale dedicata e interfaccia full-screen priva di barra degli indirizzi.
 
 * **Ricerca Fuzzy Ibrida & Pertinenza:** supporta ricerche parziali, errori di battitura e codici senza spazi (es. `idepad slim3`, `lenvo`), distinguendo in modo esatto i numeri di serie/modello, il Codice PIM (6 cifre) e l'EAN-13.
 
 * **Interazioni Istantanee (Optimistic UI):** i tasti `+`, `-` ed `ESPOSTO` aggiornano immediatamente l'interfaccia senza attendere la latenza della rete mobile, sincronizzando il database in background.
 
 * **Delta Giacenze Giornaliero (`+n` / `-n`):** confronto automatico tra la giacenza attuale e quella di inizio giornata (`giacenza_base`). Mostra un badge verde `+n` o rosso `-n` su ogni scheda modificata e scompare automaticamente se il conteggio torna in pari.
-
-* **Chiusura Giornata & Backup Automatico (`00:00`):** ogni notte a mezzanotte (`Europe/Rome`) salva un report CSV completo in `backups/giacenze_YYYY-MM-DD.csv` (scaricabile anche istantaneamente dall'header) e consolida le giacenze finali come nuova base per il giorno successivo, azzerando i contatori. Include anche un pulsante per la chiusura manuale anticipata.
 
 * **Note di Reparto:** campo testuale dedicato su ogni scheda prodotto per segnare informazioni rapide (es. *"ultimo esposto"*, *"manca scatola"*), completamente indicizzato nella ricerca.
 
@@ -44,9 +51,9 @@ L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato
 
 ## 📁 Struttura del Progetto
 
-```text
+```plaintext
 droid-wms/
-├── app.py              # Backend Starlette, GZip, SQLite WAL, scheduler 00:00, fuzzy search e SPA
+├── app.py              # Backend Starlette, PWA endpoints, GZip, SQLite WAL, scheduler 00:00 e SPA
 ├── requirements.txt    # Dipendenze Python (starlette, uvicorn, selectolax, tzdata, ecc.)
 ├── .gitignore          # Esclusione file sensibili, database, backup CSV e venv
 ├── README.md           # Documentazione del progetto
