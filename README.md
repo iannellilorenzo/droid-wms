@@ -1,10 +1,10 @@
-# ⚡ droid-wms (v2.4.0)
+# ⚡ droid-wms (v2.6.0)
 
 Gestionale inventario self-hosted ad alte prestazioni progettato per girare in locale su uno smartphone Android dedicato e accessibile via browser come **Progressive Web App (PWA)** nativa.
 
-Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.4.0** trasforma la barra KPI in un sistema di **drill-down interattivo** per marca, tipologia dispositivo (Computer vs Tablet) e famiglia CPU (Intel), aggiungendo inoltre la **pulizia automatica a fine giornata** dei prodotti rimasti a giacenza zero.
+Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.6.0** consolida tutte le ottimizzazioni architetturali (aggiornamento DOM chirurgico della singola card, debounce intelligente sulla ricerca, Service Worker offline-ready e tuning SQLite in RAM), affiancate ai **KPI interattivi con drill-down**, alla **modifica rapida dei prezzi** e alla **pulizia automatica a fine giornata** dei prodotti esauriti.
 
-## 🛠️ Dev Stack & Architettura (v2.4.0)
+## 🛠️ Dev Stack & Architettura (v2.6.0)
 
 L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato in micro-server always-on:
 
@@ -12,32 +12,37 @@ L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato
 
 * **Backend:** **Python 3** + **Starlette** servito in produzione su **Uvicorn** (`--no-access-log` per ridurre le scritture su flash), con `GZipMiddleware` per comprimere i payload JSON/HTML fino all'80% e thread daemon in background con fuso orario `Europe/Rome` (`tzdata`).
 
-* **Frontend, PWA & Optimistic UI:** **Single-Page App (SPA)** installabile come **PWA** (`/manifest.json`, `/sw.js`, `/icon.svg`) con apertura `standalone` a schermo intero e tema scuro nativo. Caricamento unico del catalogo con indice pre-tokenizzato in RAM, aggregazione KPI interattiva e aggiornamenti **Optimistic UI a 0 ms** sui contatori e sugli stati (con rollback automatico in caso di assenza di rete).
+* **Frontend, PWA Offline-First & Optimistic UI:** **Single-Page App (SPA)** installabile come **PWA** (`/manifest.json`, `/sw.js`, `/icon.svg`) con strategia **Network-First + CacheStorage fallback** (apre l'interfaccia e l'ultimo inventario salvato anche in assenza temporanea di segnale). Caricamento unico del catalogo con indice pre-tokenizzato in RAM, **aggiornamento DOM chirurgico della singola card (`updateSingleCard`)** senza re-render globale e risposte **Optimistic UI a 0 ms** con rollback automatico su errore di rete.
 
-* **Motore di Ricerca Fuzzy Ibrido:** ricerca multi-token intelligente agnostica rispetto al brand, con tolleranza agli errori di battitura (distanza di **Levenshtein** + match per prefisso sulle parole) combinata ad **ancoraggio numerico rigoroso** (per evitare falsi positivi tra serie diverse, es. *Slim 3* vs *Slim 5*) e ordinamento dinamico per pertinenza.
+* **Motore di Ricerca Fuzzy Ibrido & Debounce:** ricerca multi-token agnostica rispetto al brand con debounce a **70 ms**, tolleranza agli errori di battitura (distanza di **Levenshtein** + match per prefisso sulle parole) combinata ad **ancoraggio numerico rigoroso** (per evitare falsi positivi tra serie diverse, es. *Slim 3* vs *Slim 5*) e ordinamento dinamico per pertinenza.
 
 * **Scraping Engine:** Pipeline ibrida **Regex + `selectolax`** (parser HTML nativo in C) con rimozione preventiva dei payload immagini Base64 per estrazione fulminea dai link `qrc.mw`.
 
-* **Database & Backup:** **SQLite3** (`inventario.db`) configurato in modalità **`WAL` (`Write-Ahead Logging`)** con `synchronous=NORMAL` e indici B-Tree su Codice PIM/MW (6 cifre) ed EAN-13, affiancato da export automatici giornalieri in **CSV** (`backups/`).
+* **Database & Backup:** **SQLite3** (`inventario.db`) configurato in modalità **`WAL` (`Write-Ahead Logging`)** con `synchronous=NORMAL`, `temp_store=MEMORY` e `mmap_size=64MB` per mantenere indici e tabelle temporanee in RAM, affiancato da export automatici giornalieri in **CSV** (`backups/`).
 
 * **Networking & Tunneling:** **ngrok** su dominio statico HTTPS con processi persistenti gestiti via **tmux**.
 
 * **Sicurezza:** Autenticazione protetta da hash **PBKDF2-SHA256** (`security.json`), rate-limiting anti-bruteforce in memoria e cookie firmati (`itsdangerous`) `HttpOnly` / `Secure` a persistenza estesa (10 anni con auto-rinnovo ad ogni richiesta).
 
-## ✨ Funzionalità (v2.4.0)
+## ✨ Funzionalità (v2.6.0)
 
 * **Bottoni KPI Interattivi & Drill-Down Dinamico:**
+
   * **Esposti & Pezzi totali:** toccando i rispettivi pulsanti si apre un pannello di dettaglio suddiviso dinamicamente per **Marca** (es. *Lenovo*, *HP*, *ASUS*, ecc.) e, per i brand multi-categoria, ulteriormente ripartito tra **Computer (Notebook / Fisso / AIO)** e **Tablet**. Il tap su una singola voce filtra all'istante le card sottostanti.
+
   * **Variazioni oggi:** consente di filtrare al volo i movimenti giornalieri per **CPU Intel** (trasversale su tutte le marche) oppure per singolo **Brand** (includendo tutte le architetture: Intel, AMD, Snapdragon, ecc.) e sottocategoria.
-  * **Allerta Riassortimento (`Da riassortire`):** pulsante toggle rapido (disponibile anche nel menu *Stato rapido*) che isola i prodotti attualmente **esposti** con giacenza $\le 1$ (zero scorte residue in magazzino).
+
+  * **Allerta Riassortimento (`Da riassortire: n`):** pulsante toggle rapido (disponibile anche nel menu *Stato rapido*) che isola i prodotti attualmente **esposti** con giacenza $\le 1$ (zero scorte residue in magazzino).
+
+* **Modifica Rapida Prezzo in Corsia:** icona matita dedicata accanto al prezzo su ogni scheda prodotto per aggiornare al volo il listino (`POST /api/price/{id}`) con aggiornamento istantaneo del database e delle specifiche.
 
 * **Chiusura Giornata, Backup & Pulizia Esauriti (`00:00`):** ogni notte a mezzanotte (`Europe/Rome`) salva un report CSV completo in `backups/giacenze_YYYY-MM-DD.csv` (scaricabile anche istantaneamente dall'header), **elimina definitivamente dal database tutti i prodotti rimasti a giacenza `0`** e consolida le giacenze attive come nuova base per il giorno successivo. Include anche un pulsante per la chiusura manuale anticipata.
 
-* **Installazione Web App Nativa (PWA):** installabile direttamente dalla schermata Home di Android via Chrome (*"Aggiungi a schermata Home"* / *"Installa app"*), con icona vettoriale dedicata e interfaccia full-screen priva di barra degli indirizzi.
+* **Installazione Web App Nativa (PWA):** installabile direttamente dalla schermata Home di Android via Chrome (*"Aggiungi a schermata Home"* / *"Installa app"*), con icona vettoriale dedicata, funzionamento offline-resilient e interfaccia full-screen priva di barra degli indirizzi.
 
 * **Ricerca Fuzzy Ibrida & Pertinenza:** supporta ricerche parziali, errori di battitura e codici senza spazi (es. `idepad slim3`, `lenvo`), distinguendo in modo esatto i numeri di serie/modello, il Codice PIM (6 cifre) e l'EAN-13.
 
-* **Interazioni Istantanee (Optimistic UI):** i tasti `+`, `-` ed `ESPOSTO` aggiornano immediatamente l'interfaccia senza attendere la latenza della rete mobile, sincronizzando il database in background.
+* **Interazioni Istantanee (Optimistic UI):** i tasti `+`, `-`, `ESPOSTO` e modifica prezzo aggiornano immediatamente la singola card senza attendere la latenza della rete mobile e senza perdere la posizione di scorrimento, sincronizzando il database in background.
 
 * **Delta Giacenze Giornaliero (`+n` / `-n`):** confronto automatico tra la giacenza attuale e quella di inizio giornata (`giacenza_base`). Mostra un badge verde `+n` o rosso `-n` su ogni scheda modificata e scompare automaticamente se il conteggio torna in pari.
 
@@ -53,12 +58,12 @@ L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato
 
 ```plaintext
 droid-wms/
-├── app.py              # Backend Starlette, PWA endpoints, GZip, SQLite WAL, scheduler 00:00 e SPA
+├── app.py              # Backend Starlette, PWA Service Worker offline-first, GZip, SQLite WAL/RAM, scheduler 00:00 e SPA
 ├── requirements.txt    # Dipendenze Python (starlette, uvicorn, selectolax, tzdata, ecc.)
 ├── .gitignore          # Esclusione file sensibili, database, backup CSV e venv
 ├── README.md           # Documentazione del progetto
 ├── security.json       # [NON TRACCIATO] Secret key e hash PBKDF2-SHA256
-├── inventario.db       # [NON TRACCIATO] Database SQLite (modalità WAL)
+├── inventario.db       # [NON TRACCIATO] Database SQLite (modalità WAL + mmap RAM)
 └── backups/            # [NON TRACCIATO] Storico CSV delle chiusure giornaliere
 ```
 
