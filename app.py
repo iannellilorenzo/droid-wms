@@ -19,7 +19,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse, Response
 
 try:
     from selectolax.parser import HTMLParser
@@ -191,7 +191,7 @@ def set_session_cookie(response, remember: bool):
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path in ("/login", "/logout"):
+        if path in ("/login", "/logout", "/manifest.json", "/sw.js", "/icon.svg"):
             return await call_next(request)
 
         sess = get_session_data(request)
@@ -418,7 +418,14 @@ HTML_SPA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.2.1</title>
+<title>droid-wms v2.3.0</title>
+<meta name="theme-color" content="#09090b">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
 <style>
   :root { --bg:#09090b; --card:#141417; --border:#27272a; --accent:#e11d48; --green:#10b981; --text:#f4f4f5; --muted:#a1a1aa; }
   * { box-sizing: border-box; }
@@ -448,6 +455,11 @@ HTML_SPA = """<!doctype html>
   .price-pill { padding:8px 13px; border-radius:20px; font-size:13px; font-weight:700; background:rgba(251,191,36,0.16); color:#fbbf24; border:1px solid #f59e0b; white-space:nowrap; }
   .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#1e293b; color:#38bdf8; border:1px solid #38bdf8; padding:10px 18px; border-radius:99px; font-size:13px; font-weight:600; z-index:99; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.6); }
   label.lbl { display:block; font-size:11px; color:var(--muted); margin-bottom:3px; }
+  .kpi-bar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+  .kpi-pill { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:6px 10px; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:5px; }
+  .kpi-pill strong { color:var(--text); font-size:13px; }
+  .kpi-pill.alert { border-color:rgba(245,158,11,0.5); background:rgba(245,158,11,0.1); color:#fbbf24; cursor:pointer; }
+  .kpi-pill.alert strong { color:#fbbf24; }
 </style>
 </head>
 <body>
@@ -459,6 +471,8 @@ HTML_SPA = """<!doctype html>
     <a href="/logout" style="color:var(--muted);font-size:12px;text-decoration:none;">Esci</a>
   </div>
 </h1>
+
+<div id="kpiBar" class="kpi-bar"></div>
 
 <!-- RICERCA ISTANTANEA + SORT + FILTRI -->
 <div class="card">
@@ -486,6 +500,7 @@ HTML_SPA = """<!doctype html>
         <option value="esposti">Solo Esposti</option>
         <option value="non_esposti">Solo Non Esposti</option>
         <option value="changed">Con variazioni oggi (+n / -n)</option>
+        <option value="restock">Allerta riassortimento (Esposti ≤ 1 pz)</option>
       </select>
     </div>
   </div>
@@ -768,6 +783,7 @@ function renderList() {
     if (quick === 'esposti' && !p.esposto) continue;
     if (quick === 'non_esposti' && p.esposto) continue;
     if (quick === 'changed' && p.delta === 0) continue;
+    if (quick === 'restock' && !(p.esposto && p.giacenza <= 1)) continue;
     if (fBrand && p.meta.marchio !== fBrand) continue;
     if (fScreen && p.meta.schermo !== fScreen) continue;
     if (fGpu && p.meta.gpu_tipo !== fGpu) continue;
@@ -792,6 +808,28 @@ function renderList() {
   });
 
   const filtered = scored.map(x => x.p);
+
+  let totEsposti = 0, totPezzi = 0, totDelta = 0, totRestock = 0;
+  for (const p of PRODUCTS) {
+    if (p.esposto) {
+      totEsposti++;
+      if (p.giacenza <= 1) totRestock++;
+    }
+    totPezzi += p.giacenza;
+    totDelta += p.delta;
+  }
+  const deltaColor = totDelta > 0 ? '#34d399' : (totDelta < 0 ? '#fb7185' : 'var(--text)');
+  const deltaStr = totDelta > 0 ? `+${totDelta}` : `${totDelta}`;
+  const restockPill = totRestock > 0
+    ? `<div class="kpi-pill alert" onclick="toggleRestockFilter()" title="Tocca per filtrare i prodotti esposti con 0 scorte"><span>Da riassortire:</span><strong>${totRestock}</strong></div>`
+    : `<div class="kpi-pill"><span>Da riassortire:</span><strong>0</strong></div>`;
+
+  document.getElementById('kpiBar').innerHTML = `
+    <div class="kpi-pill"><span>Esposti:</span><strong>${totEsposti}</strong></div>
+    <div class="kpi-pill"><span>Pezzi totali:</span><strong>${totPezzi}</strong></div>
+    <div class="kpi-pill"><span>Variazioni oggi:</span><strong style="color:${deltaColor}">${deltaStr}</strong></div>
+    ${restockPill}
+  `;
 
   document.getElementById('count-lbl').textContent = `(${filtered.length}/${PRODUCTS.length})`;
 
@@ -987,7 +1025,17 @@ async function saveProduct(e) {
   document.getElementById('pSpecsJson').value = '{}';
   document.getElementById('addDetails').open = false;
   showToast('Prodotto salvato!');
-  loadProducts();
+  function toggleRestockFilter() {
+  const sel = document.getElementById('quickFilter');
+  sel.value = sel.value === 'restock' ? 'all' : 'restock';
+  renderList();
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+loadProducts();
 }
 
 async function importCsv(e) {
@@ -1287,7 +1335,45 @@ async def download_backup(request: Request):
     return FileResponse(latest_file, media_type="text/csv", filename="giacenze_backup.csv")
 
 
+async def pwa_manifest(request: Request):
+    return JSONResponse({
+        "name": "droid-wms — Gestionale Reparto",
+        "short_name": "droid-wms",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#09090b",
+        "theme_color": "#09090b",
+        "orientation": "portrait",
+        "icons": [
+            {
+                "src": "/icon.svg",
+                "sizes": "any",
+                "type": "image/svg+xml",
+                "purpose": "any maskable"
+            }
+        ]
+    })
+
+
+async def pwa_sw(request: Request):
+    js = "self.addEventListener('install', () => self.skipWaiting()); self.addEventListener('fetch', () => {});"
+    return Response(js, media_type="application/javascript")
+
+
+async def pwa_icon(request: Request):
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#09090b"/>
+  <rect x="28" y="28" width="456" height="456" rx="92" fill="none" stroke="#27272a" stroke-width="12"/>
+  <path d="M128 176l128-64 128 64v160l-128 64-128-64z" fill="none" stroke="#e11d48" stroke-width="26" stroke-linejoin="round"/>
+  <path d="M128 176l128 64 128-64M256 240v160" fill="none" stroke="#f4f4f5" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>"""
+    return Response(svg, media_type="image/svg+xml")
+
+
 routes = [
+    Route("/manifest.json", pwa_manifest, methods=["GET"]),
+    Route("/sw.js", pwa_sw, methods=["GET"]),
+    Route("/icon.svg", pwa_icon, methods=["GET"]),
     Route("/login", login_page, methods=["GET"]),
     Route("/login", login_submit, methods=["POST"]),
     Route("/logout", logout, methods=["GET"]),
