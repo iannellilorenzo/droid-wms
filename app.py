@@ -438,7 +438,7 @@ HTML_SPA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.6.0</title>
+<title>droid-wms v2.7.0</title>
 <meta name="theme-color" content="#09090b">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -501,12 +501,55 @@ HTML_SPA = """<!doctype html>
   <span>Inventario Reparto <small id="count-lbl" style="color:var(--muted);font-weight:400"></small></span>
   <div class="row">
     <a href="/api/backup/download" style="color:#38bdf8;font-size:12px;text-decoration:none;margin-right:8px;">Backup CSV</a>
-    <a href="/logout" style="color:var(--muted);font-size:12px;text-decoration:none;">Esci</a>
+    <button type="button" onclick="openReportModal()" style="background:rgba(59,130,246,0.16);border:1px solid rgba(59,130,246,0.45);color:#93c5fd;border-radius:8px;padding:4px 9px;font-size:12px;font-weight:600;cursor:pointer;margin-right:10px;">📋 Report</button><a href="/logout" style="color:var(--muted);font-size:12px;text-decoration:none;">Esci</a>
   </div>
 </h1>
 
 <div id="kpiBar" class="kpi-bar"></div>
 <div id="kpiDrawer" class="kpi-drawer" style="display:none;"></div>
+
+<div id="reportModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:9999;padding:14px;overflow-y:auto;">
+  <div style="max-width:520px;margin:12px auto;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <strong style="font-size:15px;">Esporta Report Venduto</strong>
+      <button type="button" onclick="closeReportModal()" style="background:transparent;color:#fb7185;border:none;font-size:14px;cursor:pointer;">Chiudi ✕</button>
+    </div>
+
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.4px;">
+      Seleziona Marchio / CPU (copia automatica):
+    </div>
+    <div id="reportBrandChips" class="kpi-chips" style="margin-bottom:12px;"></div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+      <div>
+        <label class="lbl">Nome promoter</label>
+        <input id="repPromoter" type="text" oninput="refreshReportPreview()" style="width:100%;box-sizing:border-box;">
+      </div>
+      <div>
+        <label class="lbl">Orario attività</label>
+        <input id="repHours" type="text" oninput="refreshReportPreview()" style="width:100%;box-sizing:border-box;">
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-bottom:10px;">
+      <div>
+        <label class="lbl">Punto Vendita</label>
+        <input id="repStore" type="text" oninput="refreshReportPreview()" style="width:100%;box-sizing:border-box;">
+      </div>
+      <div>
+        <label class="lbl">Data (GG/MM/AA)</label>
+        <input id="repDate" type="text" oninput="refreshReportPreview()" style="width:100%;box-sizing:border-box;">
+      </div>
+    </div>
+
+    <label class="lbl">Anteprima report copiato</label>
+    <textarea id="repPreview" rows="11" readonly style="width:100%;box-sizing:border-box;background:#09090b;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;font-family:monospace;font-size:12px;margin-bottom:10px;"></textarea>
+
+    <button type="button" onclick="copyReportManual()" style="width:100%;background:#2563eb;color:#fff;border:none;border-radius:10px;padding:10px;font-weight:600;font-size:13px;cursor:pointer;">
+      📋 Copia di nuovo negli appunti
+    </button>
+  </div>
+</div>
 
 <div id="kpiBar" class="kpi-bar"></div>
 
@@ -986,6 +1029,160 @@ function updateSingleCard(id) {
   } else {
     renderList();
   }
+}
+
+let REPORT_FILTER = 'Lenovo';
+
+function getTodayShortIt() {
+  const now = new Date();
+  const dd = String(now.getDate()).padStart(2, '0');
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const yy = String(now.getFullYear()).slice(-2);
+  return `${dd}/${mm}/${yy}`;
+}
+
+function buildReportText(targetFilter) {
+  const promoter = (document.getElementById('repPromoter').value || 'Lorenzo Iannelli').trim();
+  const store = (document.getElementById('repStore').value || 'Mediaworld Bergamo 2, Orio al Serio').trim();
+  const dateStr = (document.getElementById('repDate').value || getTodayShortIt()).trim();
+  const hours = (document.getElementById('repHours').value || '10:30 - 19:30').trim();
+
+  localStorage.setItem('wms_rep_promoter', promoter);
+  localStorage.setItem('wms_rep_store', store);
+  localStorage.setItem('wms_rep_hours', hours);
+
+  const soldItems = PRODUCTS.filter(p => {
+    if (p.delta >= 0) return false;
+    if (targetFilter === 'Intel') return (p.meta.cpu_brand || '') === 'Intel';
+    return (p.meta.marchio || 'Altro').toLowerCase() === targetFilter.toLowerCase();
+  });
+
+  let out = `Nome promoter: ${promoter}\n`;
+  out += `Punto Vendita: ${store}\n`;
+  out += `Data attività e orario: ${dateStr} ${hours}\n\n\n\n`;
+
+  if (soldItems.length === 0) {
+    out += `(Nessuna vendita registrata oggi per ${targetFilter})`;
+    return { text: out, count: 0 };
+  }
+
+  const blocks = soldItems.map(p => {
+    const brand = (p.meta.marchio || '').trim();
+    const rawTitle = (p.titolo || '').trim();
+    const fullDesc = (brand && !rawTitle.toLowerCase().startsWith(brand.toLowerCase()))
+      ? `${brand} ${rawTitle}`
+      : rawTitle;
+    const qtySold = Math.abs(p.delta);
+    let priceStr = '';
+    if (p.meta.prezzo !== null && p.meta.prezzo !== undefined) {
+      priceStr = Number.isInteger(p.meta.prezzo)
+        ? String(p.meta.prezzo)
+        : String(p.meta.prezzo).replace('.', ',');
+    }
+    return [
+      `Brand e descrizione prodotto: ${fullDesc}`,
+      `Codice MW prodotto: ${p.codice_mw || ''}`,
+      `Quantità: ${qtySold}`,
+      `Prezzo di vendita: ${priceStr}`
+    ].join('\n');
+  });
+
+  out += blocks.join('\n\n');
+  return { text: out, count: soldItems.length };
+}
+
+async function writeToSystemClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {}
+  try {
+    const ta = document.getElementById('repPreview');
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    return document.execCommand('copy');
+  } catch (e) {
+    return false;
+  }
+}
+
+function renderReportBrandChips() {
+  const brandCounts = {};
+  let intelSold = 0;
+
+  for (const p of PRODUCTS) {
+    const sold = p.delta < 0 ? Math.abs(p.delta) : 0;
+    const br = p.meta.marchio || 'Altro';
+    brandCounts[br] = (brandCounts[br] || 0) + sold;
+    if ((p.meta.cpu_brand || '') === 'Intel') {
+      intelSold += sold;
+    }
+  }
+
+  const brands = Object.keys(brandCounts).sort((a, b) => {
+    if (a.toLowerCase() === 'lenovo') return -1;
+    if (b.toLowerCase() === 'lenovo') return 1;
+    return brandCounts[b] - brandCounts[a];
+  });
+
+  const options = ['Intel', ...brands];
+  const container = document.getElementById('reportBrandChips');
+  container.innerHTML = options.map(opt => {
+    const cnt = opt === 'Intel' ? intelSold : (brandCounts[opt] || 0);
+    const sel = REPORT_FILTER === opt ? 'selected' : '';
+    return `<button type="button" class="kpi-chip ${sel}" onclick="selectReportFilter('${escKpi(opt)}')">${escKpi(opt)}: <strong>${cnt}</strong></button>`;
+  }).join('');
+}
+
+async function selectReportFilter(filterName) {
+  REPORT_FILTER = filterName;
+  renderReportBrandChips();
+  const { text, count } = buildReportText(filterName);
+  document.getElementById('repPreview').value = text;
+  const ok = await writeToSystemClipboard(text);
+  if (count === 0) {
+    showToast(`Nessuna vendita oggi per ${filterName}`);
+  } else if (ok) {
+    showToast(`Report ${filterName} (${count} mod.) copiato!`);
+  } else {
+    showToast('Report generato (usa Copia sotto)');
+  }
+}
+
+function refreshReportPreview() {
+  const { text } = buildReportText(REPORT_FILTER);
+  document.getElementById('repPreview').value = text;
+}
+
+async function copyReportManual() {
+  const { text } = buildReportText(REPORT_FILTER);
+  document.getElementById('repPreview').value = text;
+  const ok = await writeToSystemClipboard(text);
+  showToast(ok ? `Report ${REPORT_FILTER} copiato negli appunti!` : 'Seleziona il testo e copia manualmente');
+}
+
+function openReportModal() {
+  document.getElementById('repPromoter').value = localStorage.getItem('wms_rep_promoter') || 'Lorenzo Iannelli';
+  document.getElementById('repStore').value = localStorage.getItem('wms_rep_store') || 'Mediaworld Bergamo 2, Orio al Serio';
+  document.getElementById('repHours').value = localStorage.getItem('wms_rep_hours') || '10:30 - 19:30';
+  document.getElementById('repDate').value = getTodayShortIt();
+
+  const hasLenovo = PRODUCTS.some(p => (p.meta.marchio || '').toLowerCase() === 'lenovo');
+  if (!hasLenovo && PRODUCTS.length > 0) {
+    REPORT_FILTER = PRODUCTS[0].meta.marchio || 'Intel';
+  } else {
+    REPORT_FILTER = 'Lenovo';
+  }
+
+  document.getElementById('reportModal').style.display = 'block';
+  selectReportFilter(REPORT_FILTER);
+}
+
+function closeReportModal() {
+  document.getElementById('reportModal').style.display = 'none';
 }
 
 function renderList() {
@@ -1612,7 +1809,7 @@ async def pwa_manifest(request: Request):
 
 
 async def pwa_sw(request: Request):
-    js = """const CACHE = 'droid-wms-v260';
+    js = """const CACHE = 'droid-wms-v270';
 self.addEventListener('install', e => {
   self.skipWaiting();
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/manifest.json', '/icon.svg'])).catch(() => {}));
