@@ -4,10 +4,12 @@ import csv
 import io
 import json
 import time
+import asyncio
 import getpass
 import secrets
 import sqlite3
 import threading
+from contextlib import closing
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import requests
@@ -41,6 +43,28 @@ SESSION_MAX_AGE = 86400 * 3650  # 10 anni, rinnovato ad ogni richiesta
 LOGIN_ATTEMPTS = {}
 MAX_ATTEMPTS = 5
 LOCKOUT_SECONDS = 60
+
+# Regex pre-compilate a livello di modulo
+RE_NON_DIGIT = re.compile(r"\D")
+RE_CLEAN_NUM = re.compile(r"[^0-9.,]")
+RE_PRICE = re.compile(r"(\d+(?:[.,]\d+)?)")
+RE_SCREEN = re.compile(r"(\d{2}(?:[.,]\d)?)")
+RE_RAM = re.compile(r"\b(4|6|8|12|16|24|32|64)\b")
+RE_SSD = re.compile(r"\b(64|128|256|512|1000|1024|2000|2048)\b")
+RE_TB = re.compile(r"\b1\s*TB\b", re.I)
+RE_TABLET = re.compile(r"\b(tablet|ipad|tab)\b")
+RE_CPU_INTEL = re.compile(r"\b(intel|core\s*i[3579]|core\s*ultra|celeron|pentium|n100|n200)\b")
+RE_CPU_AMD = re.compile(r"\b(amd|ryzen|athlon)\b")
+RE_CPU_QCOM = re.compile(r"\b(snapdragon|qualcomm)\b")
+RE_CPU_APPLE = re.compile(r"\b(apple|m1|m2|m3|m4)\b")
+RE_IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
+RE_EAN = re.compile(r"(?:EAN|GTIN|Barcode|Codice\s*a\s*barre)\D{0,15}(\b\d{12,13}\b)", re.I)
+RE_EAN13 = re.compile(r"\b\d{13}\b")
+RE_MW = re.compile(r"(?:Codice\s*(?:articolo|prodotto|MW|PIM)?|Art\.?|SKU)\D{0,15}(\b\d{6}\b)", re.I)
+RE_6DIGITS = re.compile(r"\b(\d{6})\b")
+
+KNOWN_BRANDS = ("LENOVO", "SAMSUNG", "HP", "ASUS", "ACER", "MSI", "APPLE", "DELL", "LG", "SONY", "HUAWEI", "MICROSOFT")
+DEDICATED_GPU_KW = ("RTX", "GTX", "NVIDIA", "GEFORCE", "RADEON RX", "ARC A", "ARC B", "QUADRO")
 
 
 def load_or_init_security():
@@ -80,7 +104,7 @@ def get_db():
 
 
 def init_db():
-    with get_db() as conn:
+    with closing(get_db()) as conn, conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS prodotti (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +142,7 @@ def run_nightly_backup_and_reset(date_str=None):
     daily_file = os.path.join(BACKUP_DIR, f"giacenze_{date_str}.csv")
     latest_file = os.path.join(BACKUP_DIR, "giacenze_latest.csv")
 
-    with get_db() as conn:
+    with closing(get_db()) as conn, conn:
         rows = conn.execute(
             "SELECT codice_mw, ean, titolo, giacenza_base, giacenza, esposto, note, specifiche FROM prodotti ORDER BY esposto DESC, titolo ASC"
         ).fetchall()
@@ -146,9 +170,8 @@ def run_nightly_backup_and_reset(date_str=None):
                         "Prezzo EUR": specs.get("Prezzo EUR") or specs.get("Prezzo") or "",
                     })
 
-        # Elimina definitivamente i prodotti esauriti (giacenza <= 0) e riallinea i contatori per il nuovo giorno
         conn.execute("DELETE FROM prodotti WHERE giacenza <= 0")
-        conn.execute("UPDATE prodotti SET giacenza_base = giacenza")
+        conn.execute("UPDATE prodotti SET giacenza_base = giacenza, updated_at = CURRENT_TIMESTAMP")
 
 
 def midnight_scheduler():
@@ -213,42 +236,45 @@ class AuthMiddleware(BaseHTTPMiddleware):
 def normalize_ean(val):
     if not val:
         return None
-    digits = re.sub(r"\D", "", str(val).strip())
+    digits = RE_NON_DIGIT.sub("", str(val).strip())
     if not digits:
         return None
-    if len(digits) == 12:
-        digits = digits.zfill(13)
-    return digits
+    return digits.zfill(13) if len(digits) == 12 else digits
 
 
 def normalize_mw(val):
     if not val:
         return None
-    digits = re.sub(r"\D", "", str(val).strip())
+    digits = RE_NON_DIGIT.sub("", str(val).strip())
     return digits if len(digits) == 6 else None
 
 
 def extract_structured_meta(titolo, specs):
     marchio = (specs.get("Marchio") or specs.get("Marca") or "").strip().upper()
     if not marchio:
-        known_brands = ["LENOVO", "SAMSUNG", "HP", "ASUS", "ACER", "MSI", "APPLE", "DELL", "LG", "SONY", "HUAWEI", "MICROSOFT"]
         up_title = titolo.upper()
-        for b in known_brands:
-            if b in up_title or up_title.startswith(b[:3] + " "):
-                marchio = "SAMSUNG" if up_title.startswith("SAM ") else ("LENOVO" if up_title.startswith("LEN ") else b)
-                break
+        if up_title.startswith("SAM "):
+            marchio = "SAMSUNG"
+        elif up_title.startswith("LEN "):
+            marchio = "LENOVO"
+        else:
+            for b in KNOWN_BRANDS:
+                if b in up_title or up_title.startswith(b[:3] + " "):
+                    marchio = b
+                    break
 
     prezzo = None
     raw_price = specs.get("Prezzo EUR") or specs.get("Prezzo") or ""
-    m_price = re.search(r"(\d+(?:[.,]\d+)?)", str(raw_price))
+    m_price = RE_PRICE.search(str(raw_price))
     if m_price:
         prezzo = float(m_price.group(1).replace(",", "."))
 
     schermo = str(specs.get("Schermo pollici") or "").strip()
     if not schermo:
         for k, v in specs.items():
-            if any(w in k.lower() for w in ["schermo", "display", "pollici", "diagonale"]):
-                m_s = re.search(r"(\d{2}(?:[.,]\d)?)", str(v))
+            kl = k.lower()
+            if "schermo" in kl or "display" in kl or "pollici" in kl or "diagonale" in kl:
+                m_s = RE_SCREEN.search(str(v))
                 if m_s:
                     schermo = m_s.group(1).replace(",", ".")
                     break
@@ -256,8 +282,9 @@ def extract_structured_meta(titolo, specs):
     ram = str(specs.get("RAM GB") or "").strip()
     if not ram:
         for k, v in specs.items():
-            if "ram" in k.lower() or "memoria" in k.lower():
-                m_r = re.search(r"\b(4|6|8|12|16|24|32|64)\b", str(v))
+            kl = k.lower()
+            if "ram" in kl or "memoria" in kl:
+                m_r = RE_RAM.search(str(v))
                 if m_r:
                     ram = m_r.group(1)
                     break
@@ -265,34 +292,33 @@ def extract_structured_meta(titolo, specs):
     ssd = str(specs.get("SSD GB") or "").strip()
     if not ssd:
         for k, v in specs.items():
-            if any(w in k.lower() for w in ["ssd", "archiviazione", "capacità", "storage", "disco"]):
-                m_d = re.search(r"\b(64|128|256|512|1000|1024|2000|2048)\b", str(v))
+            kl = k.lower()
+            if "ssd" in kl or "archiviazione" in kl or "capacità" in kl or "storage" in kl or "disco" in kl:
+                sv = str(v)
+                m_d = RE_SSD.search(sv)
                 if m_d:
                     ssd = m_d.group(1)
                     break
-                if re.search(r"\b1\s*TB\b", str(v), re.I):
+                if RE_TB.search(sv):
                     ssd = "1024"
                     break
 
     gpu_raw = str(specs.get("GPU") or specs.get("Scheda grafica") or specs.get("Scheda video") or "").strip()
     gpu_check = f"{gpu_raw} {titolo}".upper()
-    dedicated_keywords = ["RTX", "GTX", "NVIDIA", "GEFORCE", "RADEON RX", "ARC A", "ARC B", "QUADRO"]
-    is_dedicated = any(kw in gpu_check for kw in dedicated_keywords)
-    gpu_tipo = "Dedicata" if is_dedicated else "Integrata"
+    gpu_tipo = "Dedicata" if any(kw in gpu_check for kw in DEDICATED_GPU_KW) else "Integrata"
 
     modello = (specs.get("Modello") or "").strip()
     cat_raw = f"{titolo} {specs.get('Tipologia', '')} {specs.get('Categoria', '')} {specs.get('Tipo', '')}".lower()
-    is_tablet = bool(re.search(r"\b(tablet|ipad|tab)\b", cat_raw))
-    categoria = "Tablet" if is_tablet else "Computer"
+    categoria = "Tablet" if RE_TABLET.search(cat_raw) else "Computer"
 
     cpu_raw = f"{titolo} {specs.get('Processore', '')} {specs.get('CPU', '')} {specs.get('Marca processore', '')} {specs.get('Modello Processore', '')}".lower()
-    if re.search(r"\b(intel|core\s*i[3579]|core\s*ultra|celeron|pentium|n100|n200)\b", cpu_raw):
+    if RE_CPU_INTEL.search(cpu_raw):
         cpu_brand = "Intel"
-    elif re.search(r"\b(amd|ryzen|athlon)\b", cpu_raw):
+    elif RE_CPU_AMD.search(cpu_raw):
         cpu_brand = "AMD"
-    elif re.search(r"\b(snapdragon|qualcomm)\b", cpu_raw):
+    elif RE_CPU_QCOM.search(cpu_raw):
         cpu_brand = "Qualcomm"
-    elif re.search(r"\b(apple|m1|m2|m3|m4)\b", cpu_raw):
+    elif RE_CPU_APPLE.search(cpu_raw):
         cpu_brand = "Apple"
     else:
         cpu_brand = ""
@@ -331,7 +357,7 @@ def scrape_mw(url: str):
     resp = requests.get(url, headers=headers, timeout=15)
     resp.raise_for_status()
 
-    clean_html = re.sub(r"<img\b[^>]*>", "", resp.text, flags=re.I)
+    clean_html = RE_IMG_TAG.sub("", resp.text)
     specs = {}
 
     if HAS_SELECTOLAX:
@@ -369,22 +395,21 @@ def scrape_mw(url: str):
         full_text = soup.get_text("\n", strip=True)
 
     ean = ""
-    ean_match = re.search(r"(?:EAN|GTIN|Barcode|Codice\s*a\s*barre)\D{0,15}(\b\d{12,13}\b)", full_text, re.I)
+    ean_match = RE_EAN.search(full_text)
     if ean_match:
         ean = normalize_ean(ean_match.group(1)) or ""
     else:
-        all_13 = re.findall(r"\b\d{13}\b", full_text)
+        all_13 = RE_EAN13.findall(full_text)
         if all_13:
             ean = all_13[0]
 
     codice_mw = ""
-    mw_match = re.search(r"(?:Codice\s*(?:articolo|prodotto|MW|PIM)?|Art\.?|SKU)\D{0,15}(\b\d{6}\b)", full_text, re.I)
+    mw_match = RE_MW.search(full_text)
     if mw_match:
         codice_mw = mw_match.group(1)
     else:
-        tail_lines = full_text.splitlines()[-15:]
-        for line in reversed(tail_lines):
-            m6 = re.search(r"\b(\d{6})\b", line)
+        for line in reversed(full_text.splitlines()[-15:]):
+            m6 = RE_6DIGITS.search(line)
             if m6:
                 codice_mw = m6.group(1)
                 break
@@ -439,7 +464,7 @@ HTML_SPA = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.7.0</title>
+<title>droid-wms v2.8.0</title>
 <meta name="theme-color" content="#09090b">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -675,16 +700,22 @@ HTML_SPA = r"""<!doctype html>
 <div id="toast" class="toast"></div>
 
 <script>
-window.onerror = function(msg, url, line) {
-  const box = document.getElementById('productList') || document.body;
-  box.insertAdjacentHTML('afterbegin', '<div style="background:#450a0a;color:#fca5a5;padding:10px;border-radius:8px;margin-bottom:10px;font-size:12px;">JS Error (riga ' + line + '): ' + msg + '</div>');
-};
-
 let PRODUCTS = [];
 let KPI_TAB = null;       // 'esposti' | 'pezzi' | 'variazioni' | null
 let KPI_SUBFILTER = null; // { mode, brand, categoria, cpu } | null
 let REPORT_FILTER = 'Lenovo';
 let _searchTimer = null;
+
+const PEN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
+
+const SORTERS = {
+  esposto:    (a, b) => (b.esposto - a.esposto) || a.titolo.localeCompare(b.titolo),
+  price_asc:  (a, b) => (a.meta.prezzo ?? 999999) - (b.meta.prezzo ?? 999999),
+  price_desc: (a, b) => (b.meta.prezzo ?? -1) - (a.meta.prezzo ?? -1),
+  qty_desc:   (a, b) => b.giacenza - a.giacenza,
+  qty_asc:    (a, b) => a.giacenza - b.giacenza,
+  name_asc:   (a, b) => a.titolo.localeCompare(b.titolo),
+};
 
 function showToast(msg) {
   const t = document.getElementById('toast');
@@ -692,6 +723,25 @@ function showToast(msg) {
   t.style.display = 'block';
   clearTimeout(window._toastTimer);
   window._toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2800);
+}
+
+async function apiFetch(url, opts = {}) {
+  try {
+    const res = await fetch(url, opts);
+    if (res.status === 401) {
+      location.href = '/login';
+      return { ok: false, status: 401, data: {} };
+    }
+    const text = await res.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (e) {}
+    if (!res.ok && !data.error) {
+      data.error = `Errore server (HTTP ${res.status})`;
+    }
+    return { ok: res.ok, status: res.status, data };
+  } catch (e) {
+    return { ok: false, status: 0, data: { error: 'Connessione assente o instabile' } };
+  }
 }
 
 function esc(str) {
@@ -802,9 +852,11 @@ function scoreProductSearch(p, rawQ) {
 }
 
 async function loadProducts() {
-  const res = await fetch('/api/products');
-  if (res.status === 401) { location.href = '/login'; return; }
-  const data = await res.json();
+  const { ok, data } = await apiFetch('/api/products');
+  if (!ok || !Array.isArray(data)) {
+    if (data && data.error) showToast(data.error);
+    return;
+  }
   PRODUCTS = data.map(prepareSearchIndex);
   populateFilterDropdowns();
   renderList();
@@ -947,46 +999,46 @@ function renderKpiUI() {
   let chipsHtml = '';
   let titleText = '';
 
-  if (KPI_TAB === 'esposti' || KPI_TAB === 'pezzi') {
-    const field = KPI_TAB === 'esposti' ? 'esposti' : 'pezzi';
-    titleText = KPI_TAB === 'esposti' ? 'Esposti per Marca & Tipologia' : 'Pezzi totali per Marca & Tipologia';
+  switch (KPI_TAB) {
+    case 'esposti':
+    case 'pezzi': {
+      const field = KPI_TAB;
+      titleText = KPI_TAB === 'esposti' ? 'Esposti per Marca & Tipologia' : 'Pezzi totali per Marca & Tipologia';
+      for (const br of brands) {
+        const info = byBrand[br];
+        const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
+        chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', null, null)">${esc(br)}: <strong>${info[field]}</strong></button>`;
 
-    for (const br of brands) {
-      const info = byBrand[br];
-      const val = info[field];
-      const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
-      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', null, null)">${esc(br)}: <strong>${val}</strong></button>`;
-
-      const hasComp = info.cats.Computer.count > 0;
-      const hasTab = info.cats.Tablet.count > 0;
-      if (hasComp && hasTab) {
-        const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
-        const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', 'Computer', null)">↳ ${esc(br)} Computer: <strong>${info.cats.Computer[field]}</strong></button>`;
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', 'Tablet', null)">↳ ${esc(br)} Tablet: <strong>${info.cats.Tablet[field]}</strong></button>`;
+        if (info.cats.Computer.count > 0 && info.cats.Tablet.count > 0) {
+          const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
+          const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
+          chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', 'Computer', null)">↳ ${esc(br)} Computer: <strong>${info.cats.Computer[field]}</strong></button>`;
+          chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${esc(br)}', 'Tablet', null)">↳ ${esc(br)} Tablet: <strong>${info.cats.Tablet[field]}</strong></button>`;
+        }
       }
+      break;
     }
-  } else if (KPI_TAB === 'variazioni') {
-    titleText = 'Variazioni oggi (Intel / Marche)';
-    const fmtD = d => d > 0 ? `+${d}` : `${d}`;
-    const colD = d => d > 0 ? '#34d399' : (d < 0 ? '#fb7185' : 'var(--muted)');
+    case 'variazioni': {
+      titleText = 'Variazioni oggi (Intel / Marche)';
+      const fmtD = d => d > 0 ? `+${d}` : `${d}`;
+      const colD = d => d > 0 ? '#34d399' : (d < 0 ? '#fb7185' : 'var(--muted)');
 
-    const selIntel = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.cpu === 'Intel';
-    chipsHtml += `<button type="button" class="kpi-chip ${selIntel ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', null, null, 'Intel')">Intel: <strong style="color:${colD(intelDelta)}">${fmtD(intelDelta)}</strong></button>`;
+      const selIntel = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.cpu === 'Intel';
+      chipsHtml += `<button type="button" class="kpi-chip ${selIntel ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', null, null, 'Intel')">Intel: <strong style="color:${colD(intelDelta)}">${fmtD(intelDelta)}</strong></button>`;
 
-    for (const br of brands) {
-      const info = byBrand[br];
-      const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
-      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', null, null)">${esc(br)}: <strong style="color:${colD(info.delta)}">${fmtD(info.delta)}</strong></button>`;
+      for (const br of brands) {
+        const info = byBrand[br];
+        const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
+        chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', null, null)">${esc(br)}: <strong style="color:${colD(info.delta)}">${fmtD(info.delta)}</strong></button>`;
 
-      const hasComp = info.cats.Computer.count > 0;
-      const hasTab = info.cats.Tablet.count > 0;
-      if (hasComp && hasTab) {
-        const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
-        const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', 'Computer', null)">↳ ${esc(br)} Computer: <strong style="color:${colD(info.cats.Computer.delta)}">${fmtD(info.cats.Computer.delta)}</strong></button>`;
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', 'Tablet', null)">↳ ${esc(br)} Tablet: <strong style="color:${colD(info.cats.Tablet.delta)}">${fmtD(info.cats.Tablet.delta)}</strong></button>`;
+        if (info.cats.Computer.count > 0 && info.cats.Tablet.count > 0) {
+          const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
+          const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
+          chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', 'Computer', null)">↳ ${esc(br)} Computer: <strong style="color:${colD(info.cats.Computer.delta)}">${fmtD(info.cats.Computer.delta)}</strong></button>`;
+          chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${esc(br)}', 'Tablet', null)">↳ ${esc(br)} Tablet: <strong style="color:${colD(info.cats.Tablet.delta)}">${fmtD(info.cats.Tablet.delta)}</strong></button>`;
+        }
       }
+      break;
     }
   }
 
@@ -1007,13 +1059,12 @@ function renderCard(p) {
   const specsRows = Object.entries(p.specs || {})
     .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
 
-  const penSvg = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
   const pricePill = p.meta.prezzo !== null
-    ? `<span class="price-pill">€ ${Number.isInteger(p.meta.prezzo) ? p.meta.prezzo : p.meta.prezzo.toFixed(2)}<button type="button" onclick="editPrice(${p.id})" title="Modifica prezzo" style="background:transparent;border:none;color:var(--muted);padding:2px 4px;margin-left:5px;cursor:pointer;display:inline-flex;align-items:center;">${penSvg}</button></span>`
-    : `<button type="button" class="sec" onclick="editPrice(${p.id})" title="Imposta prezzo" style="padding:7px 10px;border-radius:20px;font-size:12px;color:#fbbf24;">+ €</button>`;
+    ? `<span class="price-pill">€ ${Number.isInteger(p.meta.prezzo) ? p.meta.prezzo : p.meta.prezzo.toFixed(2)}<button type="button" data-action="price" title="Modifica prezzo" style="background:transparent;border:none;color:var(--muted);padding:2px 4px;margin-left:5px;cursor:pointer;display:inline-flex;align-items:center;">${PEN_SVG}</button></span>`
+    : `<button type="button" class="sec" data-action="price" title="Imposta prezzo" style="padding:7px 10px;border-radius:20px;font-size:12px;color:#fbbf24;">+ €</button>`;
 
   return `
-  <div class="card" id="card-${p.id}">
+  <div class="card" id="card-${p.id}" data-id="${p.id}">
     <div style="font-weight:700; font-size:15px; margin-bottom:6px;">${esc(p.titolo)}</div>
     <div style="margin-bottom:10px;">
       ${deltaBadge}
@@ -1026,17 +1077,17 @@ function renderCard(p) {
 
     <div class="row" style="justify-content:space-between; background:#0e0e11; padding:9px; border-radius:10px; gap:6px;">
       <div class="row">
-        <button type="button" class="sec qty" onclick="updateQty(${p.id}, -1)">-</button>
+        <button type="button" class="sec qty" data-action="qty-dec">-</button>
         <div style="min-width:54px; text-align:center;">
           <div style="font-size:10px;color:var(--muted)">GIACENZA</div>
           <strong style="font-size:20px;">${p.giacenza}</strong>
         </div>
-        <button type="button" class="sec qty" onclick="updateQty(${p.id}, 1)">+</button>
+        <button type="button" class="sec qty" data-action="qty-inc">+</button>
       </div>
 
       <div class="row" style="gap:6px; flex-wrap:wrap; justify-content:flex-end;">
         ${pricePill}
-        <button type="button" class="toggle ${p.esposto ? 'on' : 'off'}" onclick="toggleEsposto(${p.id})">
+        <button type="button" class="toggle ${p.esposto ? 'on' : 'off'}" data-action="esposto">
           ${p.esposto ? 'ESPOSTO: SÌ' : 'ESPOSTO: NO'}
         </button>
       </div>
@@ -1044,8 +1095,8 @@ function renderCard(p) {
 
     <div style="margin-top:9px;">
       <div class="row">
-        <input type="text" id="note-${p.id}" value="${esc(p.note || '')}" placeholder="Note reparto (es. ultimo esposto, manca scatola...)" onchange="saveNote(${p.id})" style="font-size:13px; padding:8px 10px;">
-        <button type="button" class="sec" onclick="saveNote(${p.id})" style="padding:8px 11px; font-size:12px;">Salva</button>
+        <input type="text" id="note-${p.id}" data-action="note-input" value="${esc(p.note || '')}" placeholder="Note reparto (es. ultimo esposto, manca scatola...)" style="font-size:13px; padding:8px 10px;">
+        <button type="button" class="sec" data-action="note-save" style="padding:8px 11px; font-size:12px;">Salva</button>
       </div>
     </div>
 
@@ -1054,10 +1105,10 @@ function renderCard(p) {
       ${specsRows ? `<table class="specs">${specsRows}</table>` : ''}
       <div class="row" style="margin-top:10px;">
         <input type="url" id="enrich-${p.id}" placeholder="Integra scheda da link https://qrc.mw/..." style="padding:8px; font-size:12px;">
-        <button type="button" class="sec" onclick="enrichProduct(${p.id})" style="padding:8px 10px; font-size:12px;">Aggiorna</button>
+        <button type="button" class="sec" data-action="enrich" style="padding:8px 10px; font-size:12px;">Aggiorna</button>
       </div>
       <div style="text-align:right; margin-top:6px;">
-        <button type="button" onclick="deleteProduct(${p.id})" style="background:transparent; color:#fb7185; font-size:12px; padding:4px;">Elimina scheda</button>
+        <button type="button" data-action="delete" style="background:transparent; color:#fb7185; font-size:12px; padding:4px;">Elimina scheda</button>
       </div>
     </details>
   </div>`;
@@ -1069,7 +1120,7 @@ function debouncedRenderList() {
 }
 
 function updateSingleCard(id) {
-  try { renderKpiUI(); } catch (err) {}
+  renderKpiUI();
   const activeFilter = document.getElementById('quickFilter').value;
   if (activeFilter !== 'all' || KPI_SUBFILTER) {
     renderList();
@@ -1082,6 +1133,16 @@ function updateSingleCard(id) {
     return;
   }
   el.outerHTML = renderCard(p);
+}
+
+function matchesQuickFilter(p, quick) {
+  switch (quick) {
+    case 'esposti':     return Boolean(p.esposto);
+    case 'non_esposti': return !p.esposto;
+    case 'changed':     return p.delta !== 0;
+    case 'restock':     return Boolean(p.esposto && p.giacenza <= 1);
+    default:            return true;
+  }
 }
 
 function renderList() {
@@ -1097,10 +1158,7 @@ function renderList() {
 
   const scored = [];
   for (const p of PRODUCTS) {
-    if (quick === 'esposti' && !p.esposto) continue;
-    if (quick === 'non_esposti' && p.esposto) continue;
-    if (quick === 'changed' && p.delta === 0) continue;
-    if (quick === 'restock' && !(p.esposto && p.giacenza <= 1)) continue;
+    if (!matchesQuickFilter(p, quick)) continue;
     if (fBrand && p.meta.marchio !== fBrand) continue;
     if (fScreen && p.meta.schermo !== fScreen) continue;
     if (fGpu && p.meta.gpu_tipo !== fGpu) continue;
@@ -1117,23 +1175,15 @@ function renderList() {
     }
 
     const score = scoreProductSearch(p, q);
-    if (score > 0) scored.push({p, score});
+    if (score > 0) scored.push({ p, score });
   }
 
-  scored.sort((a, b) => {
-    if (q.trim() && b.score !== a.score) return b.score - a.score;
-    const pa = a.p, pb = b.p;
-    if (sortBy === 'esposto') return (pb.esposto - pa.esposto) || pa.titolo.localeCompare(pb.titolo);
-    if (sortBy === 'price_asc') return (pa.meta.prezzo ?? 999999) - (pb.meta.prezzo ?? 999999);
-    if (sortBy === 'price_desc') return (pb.meta.prezzo ?? -1) - (pa.meta.prezzo ?? -1);
-    if (sortBy === 'qty_desc') return pb.giacenza - pa.giacenza;
-    if (sortBy === 'qty_asc') return pa.giacenza - pb.giacenza;
-    if (sortBy === 'name_asc') return pa.titolo.localeCompare(pb.titolo);
-    return 0;
-  });
+  const hasQuery = Boolean(q.trim());
+  const sortFn = SORTERS[sortBy] || SORTERS.esposto;
+  scored.sort((a, b) => (hasQuery && b.score !== a.score) ? (b.score - a.score) : sortFn(a.p, b.p));
 
   const filtered = scored.map(x => x.p);
-  try { renderKpiUI(); } catch (err) { console.error(err); }
+  renderKpiUI();
   document.getElementById('count-lbl').textContent = `(${filtered.length}/${PRODUCTS.length})`;
 
   const container = document.getElementById('productList');
@@ -1144,6 +1194,32 @@ function renderList() {
 
   container.innerHTML = filtered.map(renderCard).join('');
 }
+
+// Event Delegation centralizzata sulle schede prodotto
+document.getElementById('productList').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const card = btn.closest('.card');
+  if (!card) return;
+  const id = Number(card.dataset.id);
+
+  switch (btn.dataset.action) {
+    case 'qty-dec':   updateQty(id, -1); break;
+    case 'qty-inc':   updateQty(id, 1); break;
+    case 'esposto':   toggleEsposto(id); break;
+    case 'price':     editPrice(id); break;
+    case 'note-save': saveNote(id); break;
+    case 'enrich':    enrichProduct(id); break;
+    case 'delete':    deleteProduct(id); break;
+  }
+});
+
+document.getElementById('productList').addEventListener('change', (e) => {
+  if (e.target.matches('input[data-action="note-input"]')) {
+    const card = e.target.closest('.card');
+    if (card) saveNote(Number(card.dataset.id));
+  }
+});
 
 function getTodayShortIt() {
   const now = new Date();
@@ -1283,11 +1359,7 @@ function openReportModal() {
   document.getElementById('repDate').value = getTodayShortIt();
 
   const hasLenovo = PRODUCTS.some(p => (p.meta.marchio || '').toLowerCase() === 'lenovo');
-  if (!hasLenovo && PRODUCTS.length > 0) {
-    REPORT_FILTER = PRODUCTS[0].meta.marchio || 'Intel';
-  } else {
-    REPORT_FILTER = 'Lenovo';
-  }
+  REPORT_FILTER = (!hasLenovo && PRODUCTS.length > 0) ? (PRODUCTS[0].meta.marchio || 'Intel') : 'Lenovo';
 
   document.getElementById('reportModal').style.display = 'block';
   selectReportFilter(REPORT_FILTER);
@@ -1309,26 +1381,24 @@ async function updateQty(id, delta) {
   p.delta = p.giacenza - p.giacenza_base;
   updateSingleCard(id);
 
-  try {
-    const res = await fetch(`/api/qty/${id}`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({delta})
-    });
-    if (!res.ok) throw new Error();
-    const updated = await res.json();
-    p._pendingQty = Math.max(0, (p._pendingQty || 1) - 1);
-    if (p._pendingQty === 0) {
-      const currIdx = PRODUCTS.findIndex(x => x.id === id);
-      if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
-      updateSingleCard(id);
-    }
-  } catch (e) {
-    p._pendingQty = Math.max(0, (p._pendingQty || 1) - 1);
+  const { ok, data } = await apiFetch(`/api/qty/${id}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ delta })
+  });
+  p._pendingQty = Math.max(0, (p._pendingQty || 1) - 1);
+
+  if (!ok) {
     p.giacenza = prevQty;
     p.delta = prevDelta;
     updateSingleCard(id);
-    showToast('Errore di rete: giacenza ripristinata');
+    showToast(data.error || 'Errore di rete: giacenza ripristinata');
+    return;
+  }
+  if (p._pendingQty === 0 && data.id) {
+    const currIdx = PRODUCTS.findIndex(x => x.id === id);
+    if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(data);
+    updateSingleCard(id);
   }
 }
 
@@ -1342,21 +1412,19 @@ async function toggleEsposto(id) {
   p.esposto = p.esposto ? 0 : 1;
   updateSingleCard(id);
 
-  try {
-    const res = await fetch(`/api/esposto/${id}`, { method: 'POST' });
-    if (!res.ok) throw new Error();
-    const updated = await res.json();
-    p._pendingEsp = Math.max(0, (p._pendingEsp || 1) - 1);
-    if (p._pendingEsp === 0) {
-      const currIdx = PRODUCTS.findIndex(x => x.id === id);
-      if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
-      updateSingleCard(id);
-    }
-  } catch (e) {
-    p._pendingEsp = Math.max(0, (p._pendingEsp || 1) - 1);
+  const { ok, data } = await apiFetch(`/api/esposto/${id}`, { method: 'POST' });
+  p._pendingEsp = Math.max(0, (p._pendingEsp || 1) - 1);
+
+  if (!ok) {
     p.esposto = prevEsposto;
     updateSingleCard(id);
-    showToast('Errore di rete: stato esposto ripristinato');
+    showToast(data.error || 'Errore di rete: stato esposto ripristinato');
+    return;
+  }
+  if (p._pendingEsp === 0 && data.id) {
+    const currIdx = PRODUCTS.findIndex(x => x.id === id);
+    if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(data);
+    updateSingleCard(id);
   }
 }
 
@@ -1364,7 +1432,7 @@ async function editPrice(id) {
   const idx = PRODUCTS.findIndex(x => x.id === id);
   if (idx === -1) return;
   const p = PRODUCTS[idx];
-  const curr = p.meta.prezzo !== null && p.meta.prezzo !== undefined ? String(p.meta.prezzo).replace('.', ',') : '';
+  const curr = (p.meta.prezzo !== null && p.meta.prezzo !== undefined) ? String(p.meta.prezzo).replace('.', ',') : '';
   const input = prompt(`Nuovo prezzo (€) per ${p.titolo}:`, curr);
   if (input === null) return;
 
@@ -1383,40 +1451,39 @@ async function editPrice(id) {
   p.meta.prezzo = parsed;
   updateSingleCard(id);
 
-  try {
-    const res = await fetch(`/api/price/${id}`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({prezzo: parsed})
-    });
-    if (!res.ok) throw new Error();
-    const updated = await res.json();
-    if (updated && updated.id) {
-      const currIdx = PRODUCTS.findIndex(x => x.id === id);
-      if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
-      updateSingleCard(id);
-    }
-    showToast('Prezzo aggiornato');
-  } catch (e) {
+  const { ok, data } = await apiFetch(`/api/price/${id}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ prezzo: parsed })
+  });
+  if (!ok) {
     p.meta.prezzo = prevPrice;
     updateSingleCard(id);
-    showToast('Errore salvataggio prezzo');
+    showToast(data.error || 'Errore salvataggio prezzo');
+    return;
   }
+  if (data && data.id) {
+    const currIdx = PRODUCTS.findIndex(x => x.id === id);
+    if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(data);
+    updateSingleCard(id);
+  }
+  showToast('Prezzo aggiornato');
 }
 
 async function saveNote(id) {
   const note = document.getElementById(`note-${id}`).value;
-  const res = await fetch(`/api/note/${id}`, {
+  const { ok, data } = await apiFetch(`/api/note/${id}`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({note})
+    body: JSON.stringify({ note })
   });
-  if (res.ok) {
-    const updated = await res.json();
-    const idx = PRODUCTS.findIndex(x => x.id === id);
-    if (idx !== -1) PRODUCTS[idx] = prepareSearchIndex(updated);
-    showToast('Nota salvata');
+  if (!ok) {
+    showToast(data.error || 'Errore salvataggio nota');
+    return;
   }
+  const idx = PRODUCTS.findIndex(x => x.id === id);
+  if (idx !== -1 && data.id) PRODUCTS[idx] = prepareSearchIndex(data);
+  showToast('Nota salvata');
 }
 
 async function fetchFromUrl() {
@@ -1424,14 +1491,13 @@ async function fetchFromUrl() {
   if (!url) return;
   const btn = document.getElementById('fetchBtn');
   btn.textContent = '...';
-  const res = await fetch('/api/fetch', {
+  const { ok, data } = await apiFetch('/api/fetch', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({url})
+    body: JSON.stringify({ url })
   });
   btn.textContent = 'Leggi';
-  const data = await res.json();
-  if (!res.ok) { showToast(data.error || 'Errore lettura link'); return; }
+  if (!ok) { showToast(data.error || 'Errore lettura link'); return; }
   document.getElementById('pTitle').value = data.titolo || '';
   document.getElementById('pMw').value = data.codice_mw || '';
   document.getElementById('pEan').value = data.ean || '';
@@ -1446,18 +1512,17 @@ async function saveProduct(e) {
     titolo: document.getElementById('pTitle').value,
     codice_mw: document.getElementById('pMw').value,
     ean: document.getElementById('pEan').value,
-    giacenza: parseInt(document.getElementById('pQty').value || '0'),
+    giacenza: parseInt(document.getElementById('pQty').value || '0', 10),
     esposto: document.getElementById('pEsposto').checked,
     source_url: document.getElementById('pSourceUrl').value,
     specifiche: document.getElementById('pSpecsJson').value
   };
-  const res = await fetch('/api/save', {
+  const { ok, data } = await apiFetch('/api/save', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)
   });
-  const data = await res.json();
-  if (!res.ok) { showToast(data.error || 'Errore salvataggio'); return; }
+  if (!ok) { showToast(data.error || 'Errore salvataggio'); return; }
   document.getElementById('saveForm').reset();
   document.getElementById('pSpecsJson').value = '{}';
   document.getElementById('addDetails').open = false;
@@ -1471,10 +1536,9 @@ async function importCsv(e) {
   if (!fileInput.files.length) return;
   const fd = new FormData();
   fd.append('csv_file', fileInput.files[0]);
-  const res = await fetch('/api/import-csv', { method: 'POST', body: fd });
-  const data = await res.json();
-  showToast(data.message || data.error);
-  if (res.ok) {
+  const { ok, data } = await apiFetch('/api/import-csv', { method: 'POST', body: fd });
+  showToast(data.message || data.error || 'Operazione completata');
+  if (ok) {
     fileInput.value = '';
     loadProducts();
   }
@@ -1483,34 +1547,31 @@ async function importCsv(e) {
 async function enrichProduct(id) {
   const url = document.getElementById(`enrich-${id}`).value.trim();
   if (!url) return;
-  const res = await fetch(`/api/enrich/${id}`, {
+  const { ok, data } = await apiFetch(`/api/enrich/${id}`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({url})
+    body: JSON.stringify({ url })
   });
-  const data = await res.json();
-  if (!res.ok) { showToast(data.error || 'Errore aggiornamento'); return; }
+  if (!ok) { showToast(data.error || 'Errore aggiornamento'); return; }
   showToast('Scheda tecnica integrata!');
   loadProducts();
 }
 
 async function deleteProduct(id) {
   if (!confirm('Eliminare definitivamente questo prodotto?')) return;
-  const res = await fetch(`/api/delete/${id}`, { method: 'POST' });
-  if (res.ok) {
-    PRODUCTS = PRODUCTS.filter(x => x.id !== id);
-    renderList();
-    showToast('Prodotto eliminato');
-  }
+  const { ok, data } = await apiFetch(`/api/delete/${id}`, { method: 'POST' });
+  if (!ok) { showToast(data.error || 'Errore eliminazione'); return; }
+  PRODUCTS = PRODUCTS.filter(x => x.id !== id);
+  renderList();
+  showToast('Prodotto eliminato');
 }
 
 async function manualCloseDay() {
   if (!confirm('Salvare il backup CSV ora, eliminare i prodotti a giacenza 0 e azzerare tutti i contatori +n/-n?')) return;
-  const res = await fetch('/api/close-day', { method: 'POST' });
-  if (res.ok) {
-    showToast('Backup salvato e contatori azzerati!');
-    loadProducts();
-  }
+  const { ok, data } = await apiFetch('/api/close-day', { method: 'POST' });
+  if (!ok) { showToast(data.error || 'Errore chiusura giornata'); return; }
+  showToast('Backup salvato e contatori azzerati!');
+  loadProducts();
 }
 
 if ('serviceWorker' in navigator) {
@@ -1565,16 +1626,21 @@ async def index(request: Request):
 
 
 async def api_products(request: Request):
-    with get_db() as conn:
+    with closing(get_db()) as conn:
+        meta = conn.execute("SELECT COUNT(*) AS cnt, COALESCE(MAX(updated_at), '') AS last_upd FROM prodotti").fetchone()
+        etag = f'W/"{meta["cnt"]}-{meta["last_upd"]}"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
         rows = conn.execute("SELECT * FROM prodotti ORDER BY esposto DESC, titolo ASC").fetchall()
-    return JSONResponse([serialize_product(r) for r in rows])
+    return JSONResponse([serialize_product(r) for r in rows], headers={"ETag": etag, "Cache-Control": "no-cache"})
 
 
 async def api_fetch(request: Request):
     data = await request.json()
     url = (data.get("url") or "").strip()
     try:
-        return JSONResponse(scrape_mw(url))
+        scraped = await asyncio.to_thread(scrape_mw, url)
+        return JSONResponse(scraped)
     except Exception as e:
         return JSONResponse({"error": f"Errore lettura link: {e}"}, status_code=400)
 
@@ -1595,7 +1661,7 @@ async def api_save(request: Request):
         return JSONResponse({"error": "Inserisci almeno uno tra Codice MW (6 cifre) o EAN (13 cifre)."}, status_code=400)
 
     try:
-        with get_db() as conn:
+        with closing(get_db()) as conn, conn:
             conn.execute(
                 """INSERT INTO prodotti (codice_mw, ean, titolo, specifiche, giacenza, giacenza_base, esposto, source_url)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1619,12 +1685,12 @@ async def api_import_csv(request: Request):
         inseriti = 0
         aggiornati = 0
 
-        spec_cols = [
+        spec_cols = (
             "Marchio", "Modello", "Stato", "Prezzo EUR", "B.O.",
             "Codifica (data)", "CPU", "RAM GB", "SSD GB", "Schermo pollici", "GPU"
-        ]
+        )
 
-        with get_db() as conn:
+        with closing(get_db()) as conn, conn:
             for row in reader:
                 codice_mw = normalize_mw(row.get("Codice PIM") or row.get("Codice MW"))
                 ean = normalize_ean(row.get("EAN"))
@@ -1686,7 +1752,7 @@ async def api_qty(request: Request):
     pid = int(request.path_params["pid"])
     data = await request.json()
     delta = int(data.get("delta", 0))
-    with get_db() as conn:
+    with closing(get_db()) as conn, conn:
         conn.execute(
             "UPDATE prodotti SET giacenza = MAX(0, giacenza + ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (delta, pid),
@@ -1697,9 +1763,9 @@ async def api_qty(request: Request):
 
 async def api_esposto(request: Request):
     pid = int(request.path_params["pid"])
-    with get_db() as conn:
+    with closing(get_db()) as conn, conn:
         conn.execute(
-            "UPDATE prodotti SET esposto = CASE WHEN esposto = 1 THEN 0 ELSE 1 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE prodotti SET esposto = 1 - esposto, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (pid,),
         )
         row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
@@ -1710,7 +1776,7 @@ async def api_note(request: Request):
     pid = int(request.path_params["pid"])
     data = await request.json()
     note = str(data.get("note", ""))
-    with get_db() as conn:
+    with closing(get_db()) as conn, conn:
         conn.execute(
             "UPDATE prodotti SET note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (note, pid),
@@ -1725,13 +1791,13 @@ async def api_update_price(request: Request):
     raw_val = data.get("prezzo")
     new_price = None
     if raw_val is not None and str(raw_val).strip() != "":
-        cleaned = re.sub(r"[^0-9.,]", "", str(raw_val)).replace(",", ".")
+        cleaned = RE_CLEAN_NUM.sub("", str(raw_val)).replace(",", ".")
         try:
             new_price = round(float(cleaned), 2)
         except ValueError:
             return JSONResponse({"error": "Prezzo non valido"}, status_code=400)
 
-    with get_db() as conn:
+    with closing(get_db()) as conn, conn:
         row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
         if not row:
             return JSONResponse({"error": "Prodotto non trovato"}, status_code=404)
@@ -1760,8 +1826,8 @@ async def api_enrich(request: Request):
     data = await request.json()
     url = (data.get("url") or "").strip()
     try:
-        scraped = scrape_mw(url)
-        with get_db() as conn:
+        scraped = await asyncio.to_thread(scrape_mw, url)
+        with closing(get_db()) as conn, conn:
             row = conn.execute("SELECT specifiche, codice_mw, ean FROM prodotti WHERE id = ?", (pid,)).fetchone()
             if not row:
                 return JSONResponse({"error": "Prodotto non trovato"}, status_code=404)
@@ -1785,7 +1851,7 @@ async def api_enrich(request: Request):
 
 async def api_delete(request: Request):
     pid = int(request.path_params["pid"])
-    with get_db() as conn:
+    with closing(get_db()) as conn, conn:
         conn.execute("DELETE FROM prodotti WHERE id = ?", (pid,))
     return JSONResponse({"ok": True})
 
@@ -1823,7 +1889,7 @@ async def pwa_manifest(request: Request):
 
 
 async def pwa_sw(request: Request):
-    js = """const CACHE = 'droid-wms-v276';
+    js = """const CACHE = 'droid-wms-v280';
 self.addEventListener('install', e => {
   self.skipWaiting();
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/manifest.json', '/icon.svg'])).catch(() => {}));
