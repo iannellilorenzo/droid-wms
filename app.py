@@ -278,11 +278,11 @@ def extract_structured_meta(titolo, specs):
     gpu_tipo = "Dedicata" if is_dedicated else "Integrata"
 
     modello = (specs.get("Modello") or "").strip()
-    cat_raw = f"{titolo} {specs.get('Tipologia', '')} {specs.get('Categoria', '')} {specs.get('Tipo', '')}".lower()
+    cat_raw = f"{locals().get('titolo', locals().get('title', ''))} {specs.get('Tipologia', '')} {specs.get('Categoria', '')} {specs.get('Tipo', '')}".lower()
     is_tablet = bool(re.search(r"\b(tablet|ipad|tab)\b", cat_raw))
     categoria = "Tablet" if is_tablet else "Computer"
 
-    cpu_raw = f"{titolo} {specs.get('Processore', '')} {specs.get('CPU', '')} {specs.get('Marca processore', '')} {specs.get('Modello Processore', '')}".lower()
+    cpu_raw = f"{locals().get('titolo', locals().get('title', ''))} {specs.get('Processore', '')} {specs.get('CPU', '')} {specs.get('Marca processore', '')} {specs.get('Modello Processore', '')}".lower()
     if re.search(r"\b(intel|core\s*i[3579]|core\s*ultra|celeron|pentium|n100|n200)\b", cpu_raw):
         cpu_brand = "Intel"
     elif re.search(r"\b(amd|ryzen|athlon)\b", cpu_raw):
@@ -852,7 +852,7 @@ function renderList() {
   });
 
   const filtered = scored.map(x => x.p);
-  renderKpiUI();
+  try { renderKpiUI(); } catch (err) { console.error('KPI error:', err); }
   document.getElementById('count-lbl').textContent = `(${filtered.length}/${PRODUCTS.length})`;
 
   const container = document.getElementById('productList');
