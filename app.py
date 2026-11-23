@@ -803,6 +803,163 @@ function scoreProductSearch(p, rawQ) {
   return totalScore;
 }
 
+function escKpi(v) {
+  return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function toggleKpiTab(tab) {
+  if (KPI_TAB === tab) {
+    KPI_TAB = null;
+    KPI_SUBFILTER = null;
+  } else {
+    KPI_TAB = tab;
+    KPI_SUBFILTER = null;
+  }
+  renderList();
+}
+
+function clearKpiFilter() {
+  KPI_TAB = null;
+  KPI_SUBFILTER = null;
+  renderList();
+}
+
+function applyKpiSubfilter(mode, brand, categoria, cpu) {
+  const same = KPI_SUBFILTER
+    && KPI_SUBFILTER.mode === mode
+    && KPI_SUBFILTER.brand === brand
+    && KPI_SUBFILTER.categoria === categoria
+    && KPI_SUBFILTER.cpu === cpu;
+  KPI_SUBFILTER = same ? null : { mode, brand, categoria, cpu };
+  renderList();
+}
+
+function toggleRestockFilter() {
+  const sel = document.getElementById('quickFilter');
+  sel.value = sel.value === 'restock' ? 'all' : 'restock';
+  renderList();
+}
+
+function renderKpiUI() {
+  let totEsposti = 0, totPezzi = 0, totDelta = 0, totRestock = 0;
+  const byBrand = {};
+  let intelDelta = 0;
+
+  for (const p of PRODUCTS) {
+    const brand = p.meta.marchio || 'Altro';
+    const cat = p.meta.categoria || 'Computer';
+    if (!byBrand[brand]) {
+      byBrand[brand] = {
+        esposti: 0, pezzi: 0, delta: 0,
+        cats: {
+          Computer: { esposti: 0, pezzi: 0, delta: 0, count: 0 },
+          Tablet: { esposti: 0, pezzi: 0, delta: 0, count: 0 }
+        }
+      };
+    }
+    const b = byBrand[brand];
+    b.pezzi += p.giacenza;
+    b.delta += p.delta;
+    if (p.esposto) {
+      totEsposti++;
+      b.esposti++;
+      if (p.giacenza <= 1) totRestock++;
+    }
+    if (b.cats[cat]) {
+      b.cats[cat].count++;
+      b.cats[cat].pezzi += p.giacenza;
+      b.cats[cat].delta += p.delta;
+      if (p.esposto) b.cats[cat].esposti++;
+    }
+    if (p.meta.cpu_brand === 'Intel') {
+      intelDelta += p.delta;
+    }
+    totPezzi += p.giacenza;
+    totDelta += p.delta;
+  }
+
+  const deltaColor = totDelta > 0 ? '#34d399' : (totDelta < 0 ? '#fb7185' : 'var(--text)');
+  const deltaStr = totDelta > 0 ? `+${totDelta}` : `${totDelta}`;
+  const isRestockActive = document.getElementById('quickFilter').value === 'restock';
+
+  document.getElementById('kpiBar').innerHTML = `
+    <button type="button" class="kpi-btn ${KPI_TAB === 'esposti' ? 'active' : ''}" onclick="toggleKpiTab('esposti')">
+      <span>Esposti ▾</span><strong>${totEsposti}</strong>
+    </button>
+    <button type="button" class="kpi-btn ${KPI_TAB === 'pezzi' ? 'active' : ''}" onclick="toggleKpiTab('pezzi')">
+      <span>Pezzi totali ▾</span><strong>${totPezzi}</strong>
+    </button>
+    <button type="button" class="kpi-btn ${KPI_TAB === 'variazioni' ? 'active' : ''}" onclick="toggleKpiTab('variazioni')">
+      <span>Variazioni oggi ▾</span><strong style="color:${deltaColor}">${deltaStr}</strong>
+    </button>
+    <button type="button" class="kpi-btn alert ${isRestockActive ? 'active' : ''}" onclick="toggleRestockFilter()">
+      <span>Da riassortire</span><strong>${totRestock}</strong>
+    </button>
+  `;
+
+  const drawer = document.getElementById('kpiDrawer');
+  if (!KPI_TAB) {
+    drawer.style.display = 'none';
+    return;
+  }
+
+  drawer.style.display = 'block';
+  const brands = Object.keys(byBrand).sort((a, b) => byBrand[b].pezzi - byBrand[a].pezzi);
+  let chipsHtml = '';
+  let titleText = '';
+
+  if (KPI_TAB === 'esposti' || KPI_TAB === 'pezzi') {
+    const field = KPI_TAB === 'esposti' ? 'esposti' : 'pezzi';
+    titleText = KPI_TAB === 'esposti' ? 'Esposti per Marca & Tipologia' : 'Pezzi totali per Marca & Tipologia';
+
+    for (const br of brands) {
+      const info = byBrand[br];
+      const val = info[field];
+      const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
+      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', null, null)">${escKpi(br)}: <strong>${val}</strong></button>`;
+
+      const hasComp = info.cats.Computer.count > 0;
+      const hasTab = info.cats.Tablet.count > 0;
+      if (hasComp && hasTab) {
+        const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
+        const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
+        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', 'Computer', null)">↳ ${escKpi(br)} Computer: <strong>${info.cats.Computer[field]}</strong></button>`;
+        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', 'Tablet', null)">↳ ${escKpi(br)} Tablet: <strong>${info.cats.Tablet[field]}</strong></button>`;
+      }
+    }
+  } else if (KPI_TAB === 'variazioni') {
+    titleText = 'Variazioni oggi (Intel / Marche)';
+    const fmtD = d => d > 0 ? `+${d}` : `${d}`;
+    const colD = d => d > 0 ? '#34d399' : (d < 0 ? '#fb7185' : 'var(--muted)');
+
+    const selIntel = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.cpu === 'Intel';
+    chipsHtml += `<button type="button" class="kpi-chip ${selIntel ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', null, null, 'Intel')">Intel: <strong style="color:${colD(intelDelta)}">${fmtD(intelDelta)}</strong></button>`;
+
+    for (const br of brands) {
+      const info = byBrand[br];
+      const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
+      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', null, null)">${escKpi(br)}: <strong style="color:${colD(info.delta)}">${fmtD(info.delta)}</strong></button>`;
+
+      const hasComp = info.cats.Computer.count > 0;
+      const hasTab = info.cats.Tablet.count > 0;
+      if (hasComp && hasTab) {
+        const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
+        const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
+        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', 'Computer', null)">↳ ${escKpi(br)} Computer: <strong style="color:${colD(info.cats.Computer.delta)}">${fmtD(info.cats.Computer.delta)}</strong></button>`;
+        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', 'Tablet', null)">↳ ${escKpi(br)} Tablet: <strong style="color:${colD(info.cats.Tablet.delta)}">${fmtD(info.cats.Tablet.delta)}</strong></button>`;
+      }
+    }
+  }
+
+  drawer.innerHTML = `
+    <div class="kpi-drawer-hdr">
+      <span>${titleText}</span>
+      <button type="button" onclick="clearKpiFilter()" style="background:transparent;color:#fb7185;padding:0;font-size:11px;">Chiudi ✕</button>
+    </div>
+    <div class="kpi-chips">${chipsHtml}</div>
+  `;
+}
+
 function renderList() {
   const q = document.getElementById('searchInput').value;
   const sortBy = document.getElementById('sortSelect').value;
@@ -1101,164 +1258,6 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 
-function toggleKpiTab(tab) {
-  if (KPI_TAB === tab) {
-    KPI_TAB = null;
-    KPI_SUBFILTER = null;
-  } else {
-    KPI_TAB = tab;
-    KPI_SUBFILTER = null;
-  }
-  renderList();
-}
-
-function clearKpiFilter() {
-  KPI_TAB = null;
-  KPI_SUBFILTER = null;
-  renderList();
-}
-
-function applyKpiSubfilter(mode, brand, categoria, cpu) {
-  const same = KPI_SUBFILTER
-    && KPI_SUBFILTER.mode === mode
-    && KPI_SUBFILTER.brand === brand
-    && KPI_SUBFILTER.categoria === categoria
-    && KPI_SUBFILTER.cpu === cpu;
-  KPI_SUBFILTER = same ? null : { mode, brand, categoria, cpu };
-  renderList();
-}
-
-function toggleRestockFilter() {
-  const sel = document.getElementById('quickFilter');
-  sel.value = sel.value === 'restock' ? 'all' : 'restock';
-  renderList();
-}
-
-function escKpi(v) {
-  return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-
-function renderKpiUI() {
-  let totEsposti = 0, totPezzi = 0, totDelta = 0, totRestock = 0;
-  const byBrand = {};
-  let intelDelta = 0, intelMoved = 0;
-
-  for (const p of PRODUCTS) {
-    const brand = p.meta.marchio || 'Altro';
-    const cat = p.meta.categoria || 'Computer';
-    if (!byBrand[brand]) {
-      byBrand[brand] = {
-        esposti: 0, pezzi: 0, delta: 0, moved: 0,
-        cats: {
-          Computer: { esposti: 0, pezzi: 0, delta: 0, count: 0 },
-          Tablet: { esposti: 0, pezzi: 0, delta: 0, count: 0 }
-        }
-      };
-    }
-    const b = byBrand[brand];
-    b.pezzi += p.giacenza;
-    b.delta += p.delta;
-    if (p.delta !== 0) b.moved++;
-    if (p.esposto) {
-      totEsposti++;
-      b.esposti++;
-      if (p.giacenza <= 1) totRestock++;
-    }
-    if (b.cats[cat]) {
-      b.cats[cat].count++;
-      b.cats[cat].pezzi += p.giacenza;
-      b.cats[cat].delta += p.delta;
-      if (p.esposto) b.cats[cat].esposti++;
-    }
-    if (p.meta.cpu_brand === 'Intel') {
-      intelDelta += p.delta;
-      if (p.delta !== 0) intelMoved++;
-    }
-    totPezzi += p.giacenza;
-    totDelta += p.delta;
-  }
-
-  const deltaColor = totDelta > 0 ? '#34d399' : (totDelta < 0 ? '#fb7185' : 'var(--text)');
-  const deltaStr = totDelta > 0 ? `+${totDelta}` : `${totDelta}`;
-  const isRestockActive = document.getElementById('quickFilter').value === 'restock';
-
-  document.getElementById('kpiBar').innerHTML = `
-    <button type="button" class="kpi-btn ${KPI_TAB === 'esposti' ? 'active' : ''}" onclick="toggleKpiTab('esposti')">
-      <span>Esposti ▾</span><strong>${totEsposti}</strong>
-    </button>
-    <button type="button" class="kpi-btn ${KPI_TAB === 'pezzi' ? 'active' : ''}" onclick="toggleKpiTab('pezzi')">
-      <span>Pezzi totali ▾</span><strong>${totPezzi}</strong>
-    </button>
-    <button type="button" class="kpi-btn ${KPI_TAB === 'variazioni' ? 'active' : ''}" onclick="toggleKpiTab('variazioni')">
-      <span>Variazioni oggi ▾</span><strong style="color:${deltaColor}">${deltaStr}</strong>
-    </button>
-    <button type="button" class="kpi-btn alert ${isRestockActive ? 'active' : ''}" onclick="toggleRestockFilter()">
-      <span>Da riassortire</span><strong>${totRestock}</strong>
-    </button>
-  `;
-
-  const drawer = document.getElementById('kpiDrawer');
-  if (!KPI_TAB) {
-    drawer.style.display = 'none';
-    return;
-  }
-
-  drawer.style.display = 'block';
-  const brands = Object.keys(byBrand).sort((a, b) => byBrand[b].pezzi - byBrand[a].pezzi);
-  let chipsHtml = '';
-  let titleText = '';
-
-  if (KPI_TAB === 'esposti' || KPI_TAB === 'pezzi') {
-    const field = KPI_TAB === 'esposti' ? 'esposti' : 'pezzi';
-    titleText = KPI_TAB === 'esposti' ? 'Esposti per Marca & Tipologia' : 'Pezzi totali per Marca & Tipologia';
-
-    for (const br of brands) {
-      const info = byBrand[br];
-      const val = info[field];
-      const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
-      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', null, null)">${escKpi(br)}: <strong>${val}</strong></button>`;
-
-      const hasComp = info.cats.Computer.count > 0;
-      const hasTab = info.cats.Tablet.count > 0;
-      if (hasComp && hasTab) {
-        const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
-        const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === KPI_TAB && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', 'Computer', null)">↳ ${escKpi(br)} Computer: <strong>${info.cats.Computer[field]}</strong></button>`;
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('${KPI_TAB}', '${escKpi(br)}', 'Tablet', null)">↳ ${escKpi(br)} Tablet: <strong>${info.cats.Tablet[field]}</strong></button>`;
-      }
-    }
-  } else if (KPI_TAB === 'variazioni') {
-    titleText = 'Variazioni oggi (Intel / Marche)';
-    const fmtD = d => d > 0 ? `+${d}` : `${d}`;
-    const colD = d => d > 0 ? '#34d399' : (d < 0 ? '#fb7185' : 'var(--muted)');
-
-    const selIntel = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.cpu === 'Intel';
-    chipsHtml += `<button type="button" class="kpi-chip ${selIntel ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', null, null, 'Intel')">Intel: <strong style="color:${colD(intelDelta)}">${fmtD(intelDelta)}</strong></button>`;
-
-    for (const br of brands) {
-      const info = byBrand[br];
-      const selBrand = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && !KPI_SUBFILTER.categoria;
-      chipsHtml += `<button type="button" class="kpi-chip ${selBrand ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', null, null)">${escKpi(br)}: <strong style="color:${colD(info.delta)}">${fmtD(info.delta)}</strong></button>`;
-
-      const hasComp = info.cats.Computer.count > 0;
-      const hasTab = info.cats.Tablet.count > 0;
-      if (hasComp && hasTab) {
-        const selComp = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Computer';
-        const selTab = KPI_SUBFILTER && KPI_SUBFILTER.mode === 'variazioni' && KPI_SUBFILTER.brand === br && KPI_SUBFILTER.categoria === 'Tablet';
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selComp ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', 'Computer', null)">↳ ${escKpi(br)} Computer: <strong style="color:${colD(info.cats.Computer.delta)}">${fmtD(info.cats.Computer.delta)}</strong></button>`;
-        chipsHtml += `<button type="button" class="kpi-chip sub ${selTab ? 'selected' : ''}" onclick="applyKpiSubfilter('variazioni', '${escKpi(br)}', 'Tablet', null)">↳ ${escKpi(br)} Tablet: <strong style="color:${colD(info.cats.Tablet.delta)}">${fmtD(info.cats.Tablet.delta)}</strong></button>`;
-      }
-    }
-  }
-
-  drawer.innerHTML = `
-    <div class="kpi-drawer-hdr">
-      <span>${titleText}</span>
-      <button type="button" onclick="clearKpiFilter()" style="background:transparent;color:#fb7185;padding:0;font-size:11px;">Chiudi ✕</button>
-    </div>
-    <div class="kpi-chips">${chipsHtml}</div>
-  `;
-}
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
