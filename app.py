@@ -17,6 +17,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 
@@ -71,6 +72,8 @@ SERIALIZER = URLSafeTimedSerializer(SECRET_KEY, salt="droid-wms-auth")
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -100,6 +103,7 @@ def init_db():
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mw ON prodotti(codice_mw)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ean ON prodotti(ean)")
+        conn.execute("PRAGMA journal_mode=WAL")
 
 
 init_db()
@@ -414,7 +418,7 @@ HTML_SPA = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.1</title>
+<title>droid-wms v2.2.1</title>
 <style>
   :root { --bg:#09090b; --card:#141417; --border:#27272a; --accent:#e11d48; --green:#10b981; --text:#f4f4f5; --muted:#a1a1aa; }
   * { box-sizing: border-box; }
@@ -593,10 +597,20 @@ function showToast(msg) {
   window._toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2800);
 }
 
+function prepareSearchIndex(p) {
+  p._modelWords = tokenizeSmart(`${p.meta.marchio || ''} ${p.meta.modello || ''} ${p.titolo}`);
+  p._noteWords = tokenizeSmart(p.note || '');
+  p._allWords = [...p._modelWords, ...p._noteWords];
+  p._modelSet = new Set(p._modelWords);
+  p._noteSet = new Set(p._noteWords);
+  return p;
+}
+
 async function loadProducts() {
   const res = await fetch('/api/products');
   if (res.status === 401) { location.href = '/login'; return; }
-  PRODUCTS = await res.json();
+  const data = await res.json();
+  PRODUCTS = data.map(prepareSearchIndex);
   populateFilterDropdowns();
   renderList();
 }
@@ -684,18 +698,20 @@ function scoreProductSearch(p, rawQ) {
   const qTokens = tokenizeSmart(q);
   if (!qTokens.length) return 1;
 
-  const modelWords = tokenizeSmart(`${p.meta.marchio || ''} ${p.meta.modello || ''} ${p.titolo}`);
-  const noteWords = tokenizeSmart(p.note || '');
-  const allWords = [...modelWords, ...noteWords];
+  const modelWords = p._modelWords || [];
+  const noteWords = p._noteWords || [];
+  const allWords = p._allWords || [];
+  const modelSet = p._modelSet || new Set();
+  const noteSet = p._noteSet || new Set();
 
   let totalScore = 0;
 
   for (const qt of qTokens) {
     // Token numerico (es. "3", "5", "16", "512"): match esatto obbligatorio, zero fuzzy
     if (/^\d+$/.test(qt)) {
-      if (modelWords.includes(qt)) {
+      if (modelSet.has(qt)) {
         totalScore += 15;
-      } else if (noteWords.includes(qt)) {
+      } else if (noteSet.has(qt)) {
         totalScore += 6;
       } else {
         return 0;
@@ -851,26 +867,65 @@ function renderList() {
 }
 
 async function updateQty(id, delta) {
-  const res = await fetch(`/api/qty/${id}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({delta})
-  });
-  if (res.ok) {
+  const idx = PRODUCTS.findIndex(x => x.id === id);
+  if (idx === -1) return;
+  const p = PRODUCTS[idx];
+  const prevQty = p.giacenza;
+  const prevDelta = p.delta;
+
+  p._pendingQty = (p._pendingQty || 0) + 1;
+  p.giacenza = Math.max(0, p.giacenza + delta);
+  p.delta = p.giacenza - p.giacenza_base;
+  renderList();
+
+  try {
+    const res = await fetch(`/api/qty/${id}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({delta})
+    });
+    if (!res.ok) throw new Error();
     const updated = await res.json();
-    const idx = PRODUCTS.findIndex(x => x.id === id);
-    if (idx !== -1) PRODUCTS[idx] = updated;
+    p._pendingQty = Math.max(0, (p._pendingQty || 1) - 1);
+    if (p._pendingQty === 0) {
+      const currIdx = PRODUCTS.findIndex(x => x.id === id);
+      if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
+      renderList();
+    }
+  } catch (e) {
+    p._pendingQty = Math.max(0, (p._pendingQty || 1) - 1);
+    p.giacenza = prevQty;
+    p.delta = prevDelta;
     renderList();
+    showToast('Errore di rete: giacenza ripristinata');
   }
 }
 
 async function toggleEsposto(id) {
-  const res = await fetch(`/api/esposto/${id}`, { method: 'POST' });
-  if (res.ok) {
+  const idx = PRODUCTS.findIndex(x => x.id === id);
+  if (idx === -1) return;
+  const p = PRODUCTS[idx];
+  const prevEsposto = p.esposto;
+
+  p._pendingEsp = (p._pendingEsp || 0) + 1;
+  p.esposto = p.esposto ? 0 : 1;
+  renderList();
+
+  try {
+    const res = await fetch(`/api/esposto/${id}`, { method: 'POST' });
+    if (!res.ok) throw new Error();
     const updated = await res.json();
-    const idx = PRODUCTS.findIndex(x => x.id === id);
-    if (idx !== -1) PRODUCTS[idx] = updated;
+    p._pendingEsp = Math.max(0, (p._pendingEsp || 1) - 1);
+    if (p._pendingEsp === 0) {
+      const currIdx = PRODUCTS.findIndex(x => x.id === id);
+      if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(updated);
+      renderList();
+    }
+  } catch (e) {
+    p._pendingEsp = Math.max(0, (p._pendingEsp || 1) - 1);
+    p.esposto = prevEsposto;
     renderList();
+    showToast('Errore di rete: stato esposto ripristinato');
   }
 }
 
@@ -884,7 +939,7 @@ async function saveNote(id) {
   if (res.ok) {
     const updated = await res.json();
     const idx = PRODUCTS.findIndex(x => x.id === id);
-    if (idx !== -1) PRODUCTS[idx] = updated;
+    if (idx !== -1) PRODUCTS[idx] = prepareSearchIndex(updated);
     showToast('Nota salvata');
   }
 }
@@ -1250,4 +1305,4 @@ routes = [
     Route("/api/backup/download", download_backup, methods=["GET"]),
 ]
 
-app = Starlette(routes=routes, middleware=[Middleware(AuthMiddleware)])
+app = Starlette(routes=routes, middleware=[Middleware(GZipMiddleware, minimum_size=500), Middleware(AuthMiddleware)])
