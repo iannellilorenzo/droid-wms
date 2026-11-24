@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import time
+import hashlib
 import asyncio
 import getpass
 import secrets
@@ -40,9 +41,16 @@ TZ_ROME = ZoneInfo("Europe/Rome")
 COOKIE_NAME = "droid_wms_session"
 SESSION_MAX_AGE = 86400 * 3650  # 10 anni, rinnovato ad ogni richiesta
 
+DB_LOCK = threading.Lock()
 LOGIN_ATTEMPTS = {}
 MAX_ATTEMPTS = 5
 LOCKOUT_SECONDS = 60
+
+# Sessione HTTP persistente con connection pooling per scraping qrc.mw
+HTTP_SESSION = requests.Session()
+HTTP_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+})
 
 # Regex pre-compilate a livello di modulo
 RE_NON_DIGIT = re.compile(r"\D")
@@ -65,11 +73,12 @@ RE_6DIGITS = re.compile(r"\b(\d{6})\b")
 
 KNOWN_BRANDS = ("LENOVO", "SAMSUNG", "HP", "ASUS", "ACER", "MSI", "APPLE", "DELL", "LG", "SONY", "HUAWEI", "MICROSOFT")
 DEDICATED_GPU_KW = ("RTX", "GTX", "NVIDIA", "GEFORCE", "RADEON RX", "ARC A", "ARC B", "QUADRO")
+SELECT_PRODUCT_COLS = "id, codice_mw, ean, titolo, specifiche, giacenza, giacenza_base, esposto, note"
 
 
 def load_or_init_security():
     if os.path.exists(SEC_PATH):
-        with open(SEC_PATH, "r") as f:
+        with open(SEC_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
             pwd_hash = data.get("pwd_hash") or data.get("pin_hash")
             return data["secret_key"], pwd_hash
@@ -83,7 +92,7 @@ def load_or_init_security():
         "secret_key": secrets.token_hex(32),
         "pwd_hash": generate_password_hash(pwd, method="pbkdf2:sha256", salt_length=16),
     }
-    with open(SEC_PATH, "w") as f:
+    with open(SEC_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f)
     os.chmod(SEC_PATH, 0o600)
     return data["secret_key"], data["pwd_hash"]
@@ -104,7 +113,7 @@ def get_db():
 
 
 def init_db():
-    with closing(get_db()) as conn, conn:
+    with DB_LOCK, closing(get_db()) as conn, conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS prodotti (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,7 +151,7 @@ def run_nightly_backup_and_reset(date_str=None):
     daily_file = os.path.join(BACKUP_DIR, f"giacenze_{date_str}.csv")
     latest_file = os.path.join(BACKUP_DIR, "giacenze_latest.csv")
 
-    with closing(get_db()) as conn, conn:
+    with DB_LOCK, closing(get_db()) as conn, conn:
         rows = conn.execute(
             "SELECT codice_mw, ean, titolo, giacenza_base, giacenza, esposto, note, specifiche FROM prodotti ORDER BY esposto DESC, titolo ASC"
         ).fetchall()
@@ -172,6 +181,7 @@ def run_nightly_backup_and_reset(date_str=None):
 
         conn.execute("DELETE FROM prodotti WHERE giacenza <= 0")
         conn.execute("UPDATE prodotti SET giacenza_base = giacenza, updated_at = CURRENT_TIMESTAMP")
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
 
 def midnight_scheduler():
@@ -179,14 +189,17 @@ def midnight_scheduler():
     while True:
         now = datetime.now(TZ_ROME)
         today_str = now.strftime("%Y-%m-%d")
-        if now.hour == 0 and now.minute == 0 and last_run_date != today_str:
+        if now.hour == 0 and now.minute < 5 and last_run_date != today_str:
             yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
             try:
                 run_nightly_backup_and_reset(yesterday_str)
                 last_run_date = today_str
             except Exception as e:
                 print(f"[BACKUP ERROR] {e}")
-        time.sleep(20)
+
+        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
+        sleep_sec = max(15.0, min((next_midnight - now).total_seconds(), 1800.0))
+        time.sleep(sleep_sec)
 
 
 threading.Thread(target=midnight_scheduler, daemon=True).start()
@@ -250,9 +263,11 @@ def normalize_mw(val):
 
 
 def extract_structured_meta(titolo, specs):
+    up_title = titolo.upper()
+
+    # Fast-path per Marchio
     marchio = (specs.get("Marchio") or specs.get("Marca") or "").strip().upper()
     if not marchio:
-        up_title = titolo.upper()
         if up_title.startswith("SAM "):
             marchio = "SAMSUNG"
         elif up_title.startswith("LEN "):
@@ -263,48 +278,40 @@ def extract_structured_meta(titolo, specs):
                     marchio = b
                     break
 
+    # Fast-path per Prezzo
     prezzo = None
-    raw_price = specs.get("Prezzo EUR") or specs.get("Prezzo") or ""
-    m_price = RE_PRICE.search(str(raw_price))
-    if m_price:
-        prezzo = float(m_price.group(1).replace(",", "."))
+    raw_price = specs.get("Prezzo EUR") or specs.get("Prezzo")
+    if raw_price:
+        m_price = RE_PRICE.search(str(raw_price))
+        if m_price:
+            prezzo = float(m_price.group(1).replace(",", "."))
 
+    # Fast-path per Schermo, RAM, SSD
     schermo = str(specs.get("Schermo pollici") or "").strip()
-    if not schermo:
+    ram = str(specs.get("RAM GB") or "").strip()
+    ssd = str(specs.get("SSD GB") or "").strip()
+
+    if not (schermo and ram and ssd):
         for k, v in specs.items():
             kl = k.lower()
-            if "schermo" in kl or "display" in kl or "pollici" in kl or "diagonale" in kl:
-                m_s = RE_SCREEN.search(str(v))
+            sv = str(v)
+            if not schermo and ("schermo" in kl or "display" in kl or "pollici" in kl or "diagonale" in kl):
+                m_s = RE_SCREEN.search(sv)
                 if m_s:
                     schermo = m_s.group(1).replace(",", ".")
-                    break
-
-    ram = str(specs.get("RAM GB") or "").strip()
-    if not ram:
-        for k, v in specs.items():
-            kl = k.lower()
-            if "ram" in kl or "memoria" in kl:
-                m_r = RE_RAM.search(str(v))
+            elif not ram and ("ram" in kl or "memoria" in kl):
+                m_r = RE_RAM.search(sv)
                 if m_r:
                     ram = m_r.group(1)
-                    break
-
-    ssd = str(specs.get("SSD GB") or "").strip()
-    if not ssd:
-        for k, v in specs.items():
-            kl = k.lower()
-            if "ssd" in kl or "archiviazione" in kl or "capacità" in kl or "storage" in kl or "disco" in kl:
-                sv = str(v)
+            elif not ssd and ("ssd" in kl or "archiviazione" in kl or "capacità" in kl or "storage" in kl or "disco" in kl):
                 m_d = RE_SSD.search(sv)
                 if m_d:
                     ssd = m_d.group(1)
-                    break
-                if RE_TB.search(sv):
+                elif RE_TB.search(sv):
                     ssd = "1024"
-                    break
 
     gpu_raw = str(specs.get("GPU") or specs.get("Scheda grafica") or specs.get("Scheda video") or "").strip()
-    gpu_check = f"{gpu_raw} {titolo}".upper()
+    gpu_check = f"{gpu_raw.upper()} {up_title}"
     gpu_tipo = "Dedicata" if any(kw in gpu_check for kw in DEDICATED_GPU_KW) else "Integrata"
 
     modello = (specs.get("Modello") or "").strip()
@@ -338,23 +345,33 @@ def extract_structured_meta(titolo, specs):
 
 
 def serialize_product(row):
-    d = dict(row)
     try:
-        specs = json.loads(d["specifiche"])
+        specs = json.loads(row["specifiche"])
     except Exception:
         specs = {}
-    d["specs"] = specs
-    d["delta"] = d["giacenza"] - d["giacenza_base"]
-    d["meta"] = extract_structured_meta(d["titolo"], specs)
-    del d["specifiche"]
-    return d
+    giacenza = row["giacenza"]
+    giacenza_base = row["giacenza_base"]
+    titolo = row["titolo"]
+    return {
+        "id": row["id"],
+        "codice_mw": row["codice_mw"],
+        "ean": row["ean"],
+        "titolo": titolo,
+        "giacenza": giacenza,
+        "giacenza_base": giacenza_base,
+        "esposto": row["esposto"],
+        "note": row["note"],
+        "specs": specs,
+        "delta": giacenza - giacenza_base,
+        "meta": extract_structured_meta(titolo, specs),
+    }
 
 
 def scrape_mw(url: str):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
-    }
-    resp = requests.get(url, headers=headers, timeout=15)
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("URL non valido: deve iniziare con http:// o https://")
+
+    resp = HTTP_SESSION.get(url, timeout=15)
     resp.raise_for_status()
 
     clean_html = RE_IMG_TAG.sub("", resp.text)
@@ -464,7 +481,7 @@ HTML_SPA = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>droid-wms v2.9.0</title>
+<title>droid-wms v3.0.0</title>
 <meta name="theme-color" content="#000000">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -910,7 +927,7 @@ HTML_SPA = r"""<!doctype html>
 <div id="productList"></div>
 
 <!-- TASTO FLOTTANTE + AD ALTEZZA POLLICE -->
-<button type="button" class="fab" onclick="openSheet('addModal')" aria-label="Aggiungi prodotto">+</button>
+<button type="button" class="fab" onclick="openAddModal()" aria-label="Aggiungi prodotto">+</button>
 
 <!-- SHEET 1: MENU PRINCIPALE (⋮) -->
 <div id="menuModal" class="sheet-backdrop" onclick="if(event.target===this)closeSheet('menuModal')">
@@ -974,11 +991,11 @@ HTML_SPA = r"""<!doctype html>
       <div class="grid2" style="margin-bottom:8px;">
         <div>
           <label class="lbl">Codice MW / PIM (6 cifre)</label>
-          <input type="text" id="pMw" pattern="[0-9]{6}" placeholder="es. 593522">
+          <input type="text" id="pMw" inputmode="numeric" pattern="[0-9]{6}" placeholder="es. 593522" oninput="this.value=this.value.replace(/\D/g,'')">
         </div>
         <div>
           <label class="lbl">EAN (13 cifre)</label>
-          <input type="text" id="pEan" pattern="[0-9]{12,13}" placeholder="es. 0199276800732">
+          <input type="text" id="pEan" inputmode="numeric" pattern="[0-9]{12,13}" placeholder="es. 0199276800732" oninput="this.value=this.value.replace(/\D/g,'')">
         </div>
       </div>
       <div class="grid2" style="margin-bottom:12px;">
@@ -1049,6 +1066,10 @@ let REPORT_FILTER = 'Lenovo';
 let _searchTimer = null;
 let _deferredInstallPrompt = null;
 
+// Buffer riusabile zero-allocation per Levenshtein
+let _levBuf0 = new Int32Array(64);
+let _levBuf1 = new Int32Array(64);
+
 const PEN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
 
 const SORTERS = {
@@ -1067,6 +1088,20 @@ function openSheet(id) {
 function closeSheet(id) {
   document.getElementById(id).classList.remove('open');
 }
+
+function openAddModal() {
+  openSheet('addModal');
+  setTimeout(() => {
+    const inp = document.getElementById('fetchUrl');
+    if (inp) inp.focus();
+  }, 60);
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.sheet-backdrop.open').forEach(el => el.classList.remove('open'));
+  }
+});
 
 function toggleFilterPanel() {
   const panel = document.getElementById('filterPanel');
@@ -1132,15 +1167,18 @@ async function apiFetch(url, opts = {}) {
       location.href = '/login';
       return { ok: false, status: 401, data: {} };
     }
+    if (res.status === 304) {
+      return { ok: true, status: 304, notModified: true, data: null };
+    }
     const text = await res.text();
     let data = {};
     try { data = text ? JSON.parse(text) : {}; } catch (e) {}
     if (!res.ok && !data.error) {
       data.error = `Errore server (HTTP ${res.status})`;
     }
-    return { ok: res.ok, status: res.status, data };
+    return { ok: res.ok, status: res.status, notModified: false, data };
   } catch (e) {
-    return { ok: false, status: 0, data: { error: 'Connessione assente o instabile' } };
+    return { ok: false, status: 0, notModified: false, data: { error: 'Connessione assente o instabile' } };
   }
 }
 
@@ -1149,20 +1187,31 @@ function esc(str) {
 }
 
 function levenshtein(a, b) {
+  const alen = a.length;
+  const blen = b.length;
   if (a === b) return 0;
-  if (!a.length) return b.length;
-  if (!b.length) return a.length;
-  const v0 = Array.from({length: b.length + 1}, (_, i) => i);
-  const v1 = new Array(b.length + 1);
-  for (let i = 0; i < a.length; i++) {
-    v1[0] = i + 1;
-    for (let j = 0; j < b.length; j++) {
-      const cost = a[i] === b[j] ? 0 : 1;
-      v1[j + 1] = Math.min(v1[j] + 1, v0[j + 1] + 1, v0[j] + cost);
-    }
-    for (let j = 0; j <= b.length; j++) v0[j] = v1[j];
+  if (!alen) return blen;
+  if (!blen) return alen;
+  if (blen + 1 > _levBuf0.length) {
+    _levBuf0 = new Int32Array(blen + 16);
+    _levBuf1 = new Int32Array(blen + 16);
   }
-  return v1[b.length];
+  const v0 = _levBuf0;
+  const v1 = _levBuf1;
+  for (let j = 0; j <= blen; j++) v0[j] = j;
+  for (let i = 0; i < alen; i++) {
+    v1[0] = i + 1;
+    const ai = a.charCodeAt(i);
+    for (let j = 0; j < blen; j++) {
+      const cost = ai === b.charCodeAt(j) ? 0 : 1;
+      const del = v0[j + 1] + 1;
+      const ins = v1[j] + 1;
+      const sub = v0[j] + cost;
+      v1[j + 1] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+    }
+    for (let j = 0; j <= blen; j++) v0[j] = v1[j];
+  }
+  return v1[blen];
 }
 
 function tokenizeSmart(str) {
@@ -1175,7 +1224,10 @@ function tokenizeSmart(str) {
 }
 
 function prepareSearchIndex(p) {
-  p._modelWords = tokenizeSmart(`${p.meta.marchio || ''} ${p.meta.modello || ''} ${p.titolo}`);
+  p.meta.marchio = p.meta.marchio || 'Altro';
+  p.meta.categoria = p.meta.categoria || 'Computer';
+  p.meta.cpu_brand = p.meta.cpu_brand || '';
+  p._modelWords = tokenizeSmart(`${p.meta.marchio} ${p.meta.modello || ''} ${p.titolo}`);
   p._noteWords = tokenizeSmart(p.note || '');
   p._allWords = [...p._modelWords, ...p._noteWords];
   p._modelSet = new Set(p._modelWords);
@@ -1193,17 +1245,16 @@ function scoreProductSearch(p, rawQ) {
     const ean13 = digits.length === 12 ? '0' + digits : digits;
     if (p.codice_mw && p.codice_mw.includes(digits)) return 100;
     if (p.ean && (p.ean.includes(digits) || p.ean.includes(ean13))) return 100;
-    const titleWords = tokenizeSmart(`${p.titolo} ${p.note || ''}`);
-    return titleWords.includes(digits) ? 60 : 0;
+    return p._allWords.includes(digits) ? 60 : 0;
   }
 
   const qTokens = tokenizeSmart(q);
   if (!qTokens.length) return 1;
 
-  const modelWords = p._modelWords || [];
-  const allWords = p._allWords || [];
-  const modelSet = p._modelSet || new Set();
-  const noteSet = p._noteSet || new Set();
+  const modelWords = p._modelWords;
+  const allWords = p._allWords;
+  const modelSet = p._modelSet;
+  const noteSet = p._noteSet;
 
   let totalScore = 0;
 
@@ -1252,7 +1303,8 @@ function scoreProductSearch(p, rawQ) {
 }
 
 async function loadProducts() {
-  const { ok, data } = await apiFetch('/api/products');
+  const { ok, notModified, data } = await apiFetch('/api/products');
+  if (notModified) return;
   if (!ok || !Array.isArray(data)) {
     if (data && data.error) showToast(data.error);
     return;
@@ -1264,12 +1316,12 @@ async function loadProducts() {
 
 function populateFilterDropdowns() {
   const brands = new Set(), screens = new Set(), rams = new Set(), ssds = new Set();
-  PRODUCTS.forEach(p => {
+  for (const p of PRODUCTS) {
     if (p.meta.marchio) brands.add(p.meta.marchio);
     if (p.meta.schermo) screens.add(p.meta.schermo);
     if (p.meta.ram) rams.add(p.meta.ram);
     if (p.meta.ssd) ssds.add(p.meta.ssd);
-  });
+  }
 
   fillSelect('fBrand', [...brands].sort(), 'Tutte');
   fillSelect('fScreen', [...screens].sort((a,b) => parseFloat(a)-parseFloat(b)), 'Tutti', v => v + '"');
@@ -1340,8 +1392,8 @@ function renderKpiUI() {
   let intelDelta = 0;
 
   for (const p of PRODUCTS) {
-    const brand = p.meta.marchio || 'Altro';
-    const cat = p.meta.categoria || 'Computer';
+    const brand = p.meta.marchio;
+    const cat = p.meta.categoria;
     if (!byBrand[brand]) {
       byBrand[brand] = {
         esposti: 0, pezzi: 0, delta: 0,
@@ -1530,7 +1582,7 @@ function renderCard(p) {
 
 function debouncedRenderList() {
   clearTimeout(_searchTimer);
-  _searchTimer = setTimeout(renderList, 70);
+  _searchTimer = setTimeout(renderList, 65);
 }
 
 function updateSingleCard(id) {
@@ -1547,7 +1599,26 @@ function updateSingleCard(id) {
     renderList();
     return;
   }
+  const wasDetailsOpen = Boolean(el.querySelector('details')?.open);
+  const noteBox = document.getElementById(`note-box-${id}`);
+  const wasNoteOpen = Boolean(noteBox && noteBox.style.display !== 'none');
+  const draftNote = document.getElementById(`note-${id}`)?.value;
+
   el.outerHTML = renderCard(p);
+
+  const newEl = document.getElementById(`card-${id}`);
+  if (newEl) {
+    if (wasDetailsOpen) {
+      const det = newEl.querySelector('details');
+      if (det) det.open = true;
+    }
+    if (wasNoteOpen) {
+      const nb = document.getElementById(`note-box-${id}`);
+      const ni = document.getElementById(`note-${id}`);
+      if (nb) nb.style.display = 'block';
+      if (ni && draftNote !== undefined) ni.value = draftNote;
+    }
+  }
 }
 
 function matchesQuickFilter(p, quick) {
@@ -1585,9 +1656,9 @@ function renderList() {
     if (KPI_SUBFILTER) {
       if (KPI_SUBFILTER.mode === 'esposti' && !p.esposto) continue;
       if (KPI_SUBFILTER.mode === 'variazioni' && p.delta === 0) continue;
-      if (KPI_SUBFILTER.brand && (p.meta.marchio || 'Altro') !== KPI_SUBFILTER.brand) continue;
-      if (KPI_SUBFILTER.categoria && (p.meta.categoria || 'Computer') !== KPI_SUBFILTER.categoria) continue;
-      if (KPI_SUBFILTER.cpu && (p.meta.cpu_brand || '') !== KPI_SUBFILTER.cpu) continue;
+      if (KPI_SUBFILTER.brand && p.meta.marchio !== KPI_SUBFILTER.brand) continue;
+      if (KPI_SUBFILTER.categoria && p.meta.categoria !== KPI_SUBFILTER.categoria) continue;
+      if (KPI_SUBFILTER.cpu && p.meta.cpu_brand !== KPI_SUBFILTER.cpu) continue;
     }
 
     const score = scoreProductSearch(p, q);
@@ -1675,8 +1746,8 @@ function buildReportText(targetFilter) {
 
   const soldItems = PRODUCTS.filter(p => {
     if (p.delta >= 0) return false;
-    if (targetFilter === 'Intel') return (p.meta.cpu_brand || '') === 'Intel';
-    return (p.meta.marchio || 'Altro').toLowerCase() === targetFilter.toLowerCase();
+    if (targetFilter === 'Intel') return p.meta.cpu_brand === 'Intel';
+    return p.meta.marchio.toLowerCase() === targetFilter.toLowerCase();
   });
 
   let out = `Nome promoter: ${promoter}\n`;
@@ -1689,9 +1760,9 @@ function buildReportText(targetFilter) {
   }
 
   const blocks = soldItems.map(p => {
-    const brand = (p.meta.marchio || '').trim();
+    const brand = p.meta.marchio.trim();
     const rawTitle = (p.titolo || '').trim();
-    const fullDesc = (brand && !rawTitle.toLowerCase().startsWith(brand.toLowerCase()))
+    const fullDesc = (brand && brand !== 'Altro' && !rawTitle.toLowerCase().startsWith(brand.toLowerCase()))
       ? `${brand} ${rawTitle}`
       : rawTitle;
     const qtySold = Math.abs(p.delta);
@@ -1719,9 +1790,9 @@ function renderReportBrandChips() {
 
   for (const p of PRODUCTS) {
     const sold = p.delta < 0 ? Math.abs(p.delta) : 0;
-    const br = p.meta.marchio || 'Altro';
+    const br = p.meta.marchio;
     brandCounts[br] = (brandCounts[br] || 0) + sold;
-    if ((p.meta.cpu_brand || '') === 'Intel') {
+    if (p.meta.cpu_brand === 'Intel') {
       intelSold += sold;
     }
   }
@@ -1776,7 +1847,7 @@ function openReportModal() {
   document.getElementById('repHours').value = localStorage.getItem('wms_rep_hours') || '10:30 - 19:30';
   document.getElementById('repDate').value = getTodayShortIt();
 
-  const hasLenovo = PRODUCTS.some(p => (p.meta.marchio || '').toLowerCase() === 'lenovo');
+  const hasLenovo = PRODUCTS.some(p => p.meta.marchio.toLowerCase() === 'lenovo');
   REPORT_FILTER = (!hasLenovo && PRODUCTS.length > 0) ? (PRODUCTS[0].meta.marchio || 'Intel') : 'Lenovo';
 
   openSheet('reportModal');
@@ -1809,7 +1880,7 @@ async function updateQty(id, delta) {
     showToast(data.error || 'Errore di rete: giacenza ripristinata');
     return;
   }
-  if (p._pendingQty === 0 && data.id) {
+  if (p._pendingQty === 0 && data && data.id) {
     const currIdx = PRODUCTS.findIndex(x => x.id === id);
     if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(data);
     updateSingleCard(id);
@@ -1835,7 +1906,7 @@ async function toggleEsposto(id) {
     showToast(data.error || 'Errore di rete: stato esposto ripristinato');
     return;
   }
-  if (p._pendingEsp === 0 && data.id) {
+  if (p._pendingEsp === 0 && data && data.id) {
     const currIdx = PRODUCTS.findIndex(x => x.id === id);
     if (currIdx !== -1) PRODUCTS[currIdx] = prepareSearchIndex(data);
     updateSingleCard(id);
@@ -1896,8 +1967,10 @@ async function saveNote(id) {
     return;
   }
   const idx = PRODUCTS.findIndex(x => x.id === id);
-  if (idx !== -1 && data.id) {
+  if (idx !== -1 && data && data.id) {
     PRODUCTS[idx] = prepareSearchIndex(data);
+    const nb = document.getElementById(`note-box-${id}`);
+    if (nb) nb.style.display = 'none';
     updateSingleCard(id);
   }
   showToast('Nota salvata');
@@ -1941,6 +2014,7 @@ async function saveProduct(e) {
   });
   if (!ok) { showToast(data.error || 'Errore salvataggio'); return; }
   document.getElementById('saveForm').reset();
+  document.getElementById('fetchUrl').value = '';
   document.getElementById('pSpecsJson').value = '{}';
   closeSheet('addModal');
   showToast('Prodotto salvato!');
@@ -2040,6 +2114,8 @@ loadProducts();
 </body>
 </html>"""
 
+HTML_SPA_ETAG = f'W/"{hashlib.sha256(HTML_SPA.encode("utf-8")).hexdigest()[:16]}"'
+
 
 async def login_page(request: Request):
     return HTMLResponse(render_login())
@@ -2048,8 +2124,12 @@ async def login_page(request: Request):
 async def login_submit(request: Request):
     ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
     now = time.time()
-    rec = LOGIN_ATTEMPTS.get(ip, {"count": 0, "until": 0})
 
+    # Pulizia periodica record scaduti
+    for k in [k for k, v in LOGIN_ATTEMPTS.items() if v["until"] and now >= v["until"]]:
+        LOGIN_ATTEMPTS.pop(k, None)
+
+    rec = LOGIN_ATTEMPTS.get(ip, {"count": 0, "until": 0})
     if now < rec["until"]:
         wait = int(rec["until"] - now)
         return HTMLResponse(render_login(f"Troppi tentativi. Riprova tra {wait}s."), status_code=429)
@@ -2079,7 +2159,9 @@ async def logout(request: Request):
 
 
 async def index(request: Request):
-    return HTMLResponse(HTML_SPA)
+    if request.headers.get("if-none-match") == HTML_SPA_ETAG:
+        return Response(status_code=304, headers={"ETag": HTML_SPA_ETAG, "Cache-Control": "no-cache"})
+    return HTMLResponse(HTML_SPA, headers={"ETag": HTML_SPA_ETAG, "Cache-Control": "no-cache"})
 
 
 async def api_products(request: Request):
@@ -2088,7 +2170,7 @@ async def api_products(request: Request):
         etag = f'W/"{meta["cnt"]}-{meta["last_upd"]}"'
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
-        rows = conn.execute("SELECT * FROM prodotti ORDER BY esposto DESC, titolo ASC").fetchall()
+        rows = conn.execute(f"SELECT {SELECT_PRODUCT_COLS} FROM prodotti ORDER BY esposto DESC, titolo ASC").fetchall()
     return JSONResponse([serialize_product(r) for r in rows], headers={"ETag": etag, "Cache-Control": "no-cache"})
 
 
@@ -2111,14 +2193,14 @@ async def api_save(request: Request):
     esposto = 1 if data.get("esposto") else 0
     specifiche = data.get("specifiche") or "{}"
     if isinstance(specifiche, dict):
-        specifiche = json.dumps(specifiche)
+        specifiche = json.dumps(specifiche, ensure_ascii=False)
     source_url = data.get("source_url") or ""
 
     if not codice_mw and not ean:
         return JSONResponse({"error": "Inserisci almeno uno tra Codice MW (6 cifre) o EAN (13 cifre)."}, status_code=400)
 
     try:
-        with closing(get_db()) as conn, conn:
+        with DB_LOCK, closing(get_db()) as conn, conn:
             conn.execute(
                 """INSERT INTO prodotti (codice_mw, ean, titolo, specifiche, giacenza, giacenza_base, esposto, source_url)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2147,7 +2229,7 @@ async def api_import_csv(request: Request):
             "Codifica (data)", "CPU", "RAM GB", "SSD GB", "Schermo pollici", "GPU"
         )
 
-        with closing(get_db()) as conn, conn:
+        with DB_LOCK, closing(get_db()) as conn, conn:
             for row in reader:
                 codice_mw = normalize_mw(row.get("Codice PIM") or row.get("Codice MW"))
                 ean = normalize_ean(row.get("EAN"))
@@ -2189,14 +2271,14 @@ async def api_import_csv(request: Request):
                                codice_mw = COALESCE(?, codice_mw), ean = COALESCE(?, ean),
                                updated_at = CURRENT_TIMESTAMP
                            WHERE id = ?""",
-                        (titolo, json.dumps(old_specs), giacenza, giacenza, esposto, codice_mw, ean, existing["id"]),
+                        (titolo, json.dumps(old_specs, ensure_ascii=False), giacenza, giacenza, esposto, codice_mw, ean, existing["id"]),
                     )
                     aggiornati += 1
                 else:
                     conn.execute(
                         """INSERT INTO prodotti (codice_mw, ean, titolo, specifiche, giacenza, giacenza_base, esposto)
                            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (codice_mw, ean, titolo, json.dumps(specs), giacenza, giacenza, esposto),
+                        (codice_mw, ean, titolo, json.dumps(specs, ensure_ascii=False), giacenza, giacenza, esposto),
                     )
                     inseriti += 1
 
@@ -2209,23 +2291,23 @@ async def api_qty(request: Request):
     pid = int(request.path_params["pid"])
     data = await request.json()
     delta = int(data.get("delta", 0))
-    with closing(get_db()) as conn, conn:
+    with DB_LOCK, closing(get_db()) as conn, conn:
         conn.execute(
             "UPDATE prodotti SET giacenza = MAX(0, giacenza + ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (delta, pid),
         )
-        row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
+        row = conn.execute(f"SELECT {SELECT_PRODUCT_COLS} FROM prodotti WHERE id = ?", (pid,)).fetchone()
     return JSONResponse(serialize_product(row))
 
 
 async def api_esposto(request: Request):
     pid = int(request.path_params["pid"])
-    with closing(get_db()) as conn, conn:
+    with DB_LOCK, closing(get_db()) as conn, conn:
         conn.execute(
             "UPDATE prodotti SET esposto = 1 - esposto, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (pid,),
         )
-        row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
+        row = conn.execute(f"SELECT {SELECT_PRODUCT_COLS} FROM prodotti WHERE id = ?", (pid,)).fetchone()
     return JSONResponse(serialize_product(row))
 
 
@@ -2233,12 +2315,12 @@ async def api_note(request: Request):
     pid = int(request.path_params["pid"])
     data = await request.json()
     note = str(data.get("note", ""))
-    with closing(get_db()) as conn, conn:
+    with DB_LOCK, closing(get_db()) as conn, conn:
         conn.execute(
             "UPDATE prodotti SET note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (note, pid),
         )
-        row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
+        row = conn.execute(f"SELECT {SELECT_PRODUCT_COLS} FROM prodotti WHERE id = ?", (pid,)).fetchone()
     return JSONResponse(serialize_product(row))
 
 
@@ -2254,8 +2336,8 @@ async def api_update_price(request: Request):
         except ValueError:
             return JSONResponse({"error": "Prezzo non valido"}, status_code=400)
 
-    with closing(get_db()) as conn, conn:
-        row = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
+    with DB_LOCK, closing(get_db()) as conn, conn:
+        row = conn.execute("SELECT specifiche FROM prodotti WHERE id = ?", (pid,)).fetchone()
         if not row:
             return JSONResponse({"error": "Prodotto non trovato"}, status_code=404)
         try:
@@ -2274,7 +2356,7 @@ async def api_update_price(request: Request):
             "UPDATE prodotti SET specifiche = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (json.dumps(spec_dict, ensure_ascii=False), pid),
         )
-        updated = conn.execute("SELECT * FROM prodotti WHERE id = ?", (pid,)).fetchone()
+        updated = conn.execute(f"SELECT {SELECT_PRODUCT_COLS} FROM prodotti WHERE id = ?", (pid,)).fetchone()
     return JSONResponse(serialize_product(updated))
 
 
@@ -2284,7 +2366,7 @@ async def api_enrich(request: Request):
     url = (data.get("url") or "").strip()
     try:
         scraped = await asyncio.to_thread(scrape_mw, url)
-        with closing(get_db()) as conn, conn:
+        with DB_LOCK, closing(get_db()) as conn, conn:
             row = conn.execute("SELECT specifiche, codice_mw, ean FROM prodotti WHERE id = ?", (pid,)).fetchone()
             if not row:
                 return JSONResponse({"error": "Prodotto non trovato"}, status_code=404)
@@ -2299,7 +2381,7 @@ async def api_enrich(request: Request):
                 """UPDATE prodotti
                    SET specifiche = ?, codice_mw = ?, ean = ?, source_url = ?, updated_at = CURRENT_TIMESTAMP
                    WHERE id = ?""",
-                (json.dumps(specs), new_mw, new_ean, url, pid),
+                (json.dumps(specs, ensure_ascii=False), new_mw, new_ean, url, pid),
             )
         return JSONResponse({"ok": True})
     except Exception as e:
@@ -2308,20 +2390,20 @@ async def api_enrich(request: Request):
 
 async def api_delete(request: Request):
     pid = int(request.path_params["pid"])
-    with closing(get_db()) as conn, conn:
+    with DB_LOCK, closing(get_db()) as conn, conn:
         conn.execute("DELETE FROM prodotti WHERE id = ?", (pid,))
     return JSONResponse({"ok": True})
 
 
 async def api_close_day(request: Request):
-    run_nightly_backup_and_reset()
+    await asyncio.to_thread(run_nightly_backup_and_reset)
     return JSONResponse({"ok": True})
 
 
 async def download_backup(request: Request):
     latest_file = os.path.join(BACKUP_DIR, "giacenze_latest.csv")
     if not os.path.exists(latest_file):
-        run_nightly_backup_and_reset()
+        await asyncio.to_thread(run_nightly_backup_and_reset)
     return FileResponse(latest_file, media_type="text/csv", filename="giacenze_backup.csv")
 
 
@@ -2346,10 +2428,10 @@ async def pwa_manifest(request: Request):
 
 
 async def pwa_sw(request: Request):
-    js = """const CACHE = 'droid-wms-v290';
+    js = """const CACHE = 'droid-wms-v300';
 self.addEventListener('install', e => {
   self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/manifest.json', '/icon.svg'])).catch(() => {}));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/manifest.json', '/icon.svg'])).catch(() => {}));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(
@@ -2360,16 +2442,8 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
-  if (url.pathname === '/' || url.pathname === '/api/products') {
-    e.respondWith(
-      fetch(e.request).then(res => {
-        if (res.ok) {
-          const clone = res.clone();
-          caches.open(CACHE).then(c => c.put(e.request, clone));
-        }
-        return res;
-      }).catch(() => caches.match(e.request))
-    );
+  if (url.pathname === '/manifest.json' || url.pathname === '/icon.svg') {
+    e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
   }
 });"""
     return Response(js, media_type="application/javascript")
