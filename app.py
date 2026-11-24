@@ -464,7 +464,7 @@ HTML_SPA = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.8.0</title>
+<title>droid-wms v2.8.1</title>
 <meta name="theme-color" content="#09090b">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -476,7 +476,7 @@ HTML_SPA = r"""<!doctype html>
   :root { --bg:#09090b; --card:#141417; --border:#27272a; --accent:#e11d48; --green:#10b981; --text:#f4f4f5; --muted:#a1a1aa; }
   * { box-sizing: border-box; }
   body { background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,sans-serif; margin:0; padding:12px; max-width:740px; margin-inline:auto; }
-  h1 { font-size:19px; margin:0 0 12px; display:flex; justify-content:space-between; align-items:center; }
+  h1 { font-size:19px; margin:0 0 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:13px; margin-bottom:12px; }
   input[type=text], input[type=url], input[type=number], input[type=file], select {
     width:100%; padding:10px 12px; border-radius:10px; border:1px solid #3f3f46;
@@ -521,6 +521,7 @@ HTML_SPA = r"""<!doctype html>
   <span>Inventario Reparto <small id="count-lbl" style="color:var(--muted);font-weight:400"></small></span>
   <div class="row">
     <a href="/api/backup/download" style="color:#38bdf8;font-size:12px;text-decoration:none;margin-right:8px;">Backup CSV</a>
+    <button type="button" id="installAppBtn" onclick="installPwaApp()" style="background:rgba(16,185,129,0.16);border:1px solid rgba(16,185,129,0.45);color:#34d399;border-radius:8px;padding:4px 9px;font-size:12px;font-weight:600;cursor:pointer;margin-right:6px;">📲 Installa</button>
     <button type="button" onclick="openReportModal()" style="background:rgba(59,130,246,0.16);border:1px solid rgba(59,130,246,0.45);color:#93c5fd;border-radius:8px;padding:4px 9px;font-size:12px;font-weight:600;cursor:pointer;margin-right:10px;">📋 Report</button>
     <a href="/logout" style="color:var(--muted);font-size:12px;text-decoration:none;">Esci</a>
   </div>
@@ -1574,6 +1575,43 @@ async function manualCloseDay() {
   loadProducts();
 }
 
+let _deferredInstallPrompt = null;
+
+function isStandaloneMode() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+function updateInstallBtnState() {
+  const btn = document.getElementById('installAppBtn');
+  if (!btn) return;
+  btn.style.display = isStandaloneMode() ? 'none' : 'inline-block';
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _deferredInstallPrompt = e;
+  updateInstallBtnState();
+});
+
+window.addEventListener('appinstalled', () => {
+  _deferredInstallPrompt = null;
+  updateInstallBtnState();
+  showToast('App installata sulla schermata Home!');
+});
+
+async function installPwaApp() {
+  if (_deferredInstallPrompt) {
+    _deferredInstallPrompt.prompt();
+    const { outcome } = await _deferredInstallPrompt.userChoice;
+    _deferredInstallPrompt = null;
+    if (outcome === 'accepted') updateInstallBtnState();
+    return;
+  }
+  showToast('Apri menu browser (⋮) → Installa app / Aggiungi a Home');
+}
+
+updateInstallBtnState();
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
@@ -1889,7 +1927,7 @@ async def pwa_manifest(request: Request):
 
 
 async def pwa_sw(request: Request):
-    js = """const CACHE = 'droid-wms-v280';
+    js = """const CACHE = 'droid-wms-v281';
 self.addEventListener('install', e => {
   self.skipWaiting();
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/manifest.json', '/icon.svg'])).catch(() => {}));
