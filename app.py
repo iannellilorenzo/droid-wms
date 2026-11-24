@@ -432,8 +432,8 @@ def render_login(error: str = ""):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Accesso Gestionale</title>
 <style>
-  body {{ background:#0b0b0c; color:#f4f4f5; font-family:system-ui,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }}
-  .box {{ background:#161618; padding:28px; border-radius:16px; width:90%; max-width:360px; border:1px solid #27272a; }}
+  body {{ background:#000; color:#f4f4f5; font-family:system-ui,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }}
+  .box {{ background:#111113; padding:28px; border-radius:16px; width:90%; max-width:360px; border:1px solid #27272a; }}
   h2 {{ margin:0 0 16px; text-align:center; }}
   input[type=password] {{ width:100%; box-sizing:border-box; padding:14px; font-size:16px; border-radius:10px; border:1px solid #3f3f46; background:#09090b; color:#fff; margin-bottom:14px; }}
   .remember {{ display:flex; align-items:center; gap:8px; font-size:14px; color:#a1a1aa; margin-bottom:16px; cursor:pointer; user-select:none; }}
@@ -463,9 +463,9 @@ HTML_SPA = r"""<!doctype html>
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>droid-wms v2.8.1</title>
-<meta name="theme-color" content="#09090b">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>droid-wms v2.9.0</title>
+<meta name="theme-color" content="#000000">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -473,68 +473,534 @@ HTML_SPA = r"""<!doctype html>
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
 <link rel="apple-touch-icon" href="/icon.svg">
 <style>
-  :root { --bg:#09090b; --card:#141417; --border:#27272a; --accent:#e11d48; --green:#10b981; --text:#f4f4f5; --muted:#a1a1aa; }
-  * { box-sizing: border-box; }
-  body { background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,sans-serif; margin:0; padding:12px; max-width:740px; margin-inline:auto; }
-  h1 { font-size:19px; margin:0 0 12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:13px; margin-bottom:12px; }
+  :root {
+    --bg:#000000;
+    --card:#111114;
+    --card-elev:#18181c;
+    --border:#26262a;
+    --accent:#e11d48;
+    --blue:#38bdf8;
+    --green:#34d399;
+    --amber:#fbbf24;
+    --text:#f4f4f5;
+    --muted:#a1a1aa;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    background:var(--bg);
+    color:var(--text);
+    font-family:system-ui,-apple-system,sans-serif;
+    margin:0;
+    padding:10px 12px 84px;
+    max-width:740px;
+    margin-inline:auto;
+  }
+  /* TOP HEADER (1 RIGA PULITA) */
+  .topbar {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:8px;
+    margin-bottom:10px;
+  }
+  .topbar-title {
+    font-size:18px;
+    font-weight:700;
+    letter-spacing:-0.2px;
+    display:flex;
+    align-items:baseline;
+    gap:6px;
+    white-space:nowrap;
+  }
+  .topbar-actions { display:flex; align-items:center; gap:6px; }
+  .btn-report {
+    background:rgba(56,189,248,0.14);
+    border:1px solid rgba(56,189,248,0.42);
+    color:var(--blue);
+    border-radius:10px;
+    padding:7px 11px;
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+  }
+  .btn-menu {
+    background:var(--card);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:10px;
+    width:36px;
+    height:34px;
+    font-size:18px;
+    font-weight:700;
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    padding:0;
+  }
+
+  /* KPI BAR */
+  .kpi-bar { display:grid; grid-template-columns:repeat(2, 1fr); gap:6px; margin-bottom:8px; }
+  .kpi-btn {
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:11px;
+    padding:8px 10px;
+    font-size:12px;
+    color:var(--muted);
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    cursor:pointer;
+    text-align:left;
+    font-weight:500;
+  }
+  .kpi-btn strong { color:var(--text); font-size:14px; }
+  .kpi-btn.active { border-color:var(--blue); background:rgba(56,189,248,0.14); color:#bae6fd; }
+  .kpi-btn.alert { border-color:rgba(245,158,11,0.42); background:rgba(245,158,11,0.08); color:var(--amber); }
+  .kpi-btn.alert strong { color:var(--amber); }
+  .kpi-btn.alert.active { border-color:#f59e0b; background:rgba(245,158,11,0.22); }
+  .kpi-drawer { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px; margin-bottom:10px; }
+  .kpi-drawer-hdr { display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.4px; }
+  .kpi-chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .kpi-chip { background:#09090b; border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:12px; color:var(--text); cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  .kpi-chip.sub { border-style:dashed; font-size:11px; padding:5px 9px; }
+  .kpi-chip.selected { border-color:var(--blue); background:rgba(56,189,248,0.18); color:#bae6fd; }
+
+  /* STICKY SEARCH & FILTER BAR */
+  .sticky-bar {
+    position:sticky;
+    top:0;
+    z-index:40;
+    background:rgba(0,0,0,0.92);
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    padding:6px 0 8px;
+    margin-bottom:8px;
+    border-bottom:1px solid #18181b;
+  }
+  .search-row { display:flex; gap:6px; align-items:center; }
+  .search-wrap { position:relative; flex:1; }
+  .search-wrap input {
+    width:100%;
+    padding:10px 34px 10px 12px;
+    border-radius:11px;
+    border:1px solid #323238;
+    background:var(--card);
+    color:#fff;
+    font-size:14px;
+    font-family:inherit;
+  }
+  .search-wrap input:focus { outline:none; border-color:var(--blue); }
+  .search-clear {
+    position:absolute;
+    right:6px;
+    top:50%;
+    transform:translateY(-50%);
+    background:transparent;
+    border:none;
+    color:var(--muted);
+    font-size:14px;
+    padding:4px 6px;
+    cursor:pointer;
+  }
+  .btn-filter {
+    background:var(--card);
+    border:1px solid #323238;
+    color:var(--text);
+    border-radius:11px;
+    padding:10px 11px;
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    white-space:nowrap;
+  }
+  .btn-filter.has-active { border-color:var(--blue); color:var(--blue); background:rgba(56,189,248,0.12); }
+  .filter-drawer {
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:10px;
+    margin-top:8px;
+  }
+
+  /* FORM & GENERIC CONTROLS */
   input[type=text], input[type=url], input[type=number], input[type=file], select {
-    width:100%; padding:10px 12px; border-radius:10px; border:1px solid #3f3f46;
+    width:100%; padding:10px 12px; border-radius:10px; border:1px solid #323238;
     background:#09090b; color:#fff; font-size:14px; font-family:inherit;
   }
   .row { display:flex; gap:8px; align-items:center; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
   .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
   button { padding:10px 14px; border-radius:10px; border:none; font-weight:600; font-size:14px; cursor:pointer; background:var(--accent); color:#fff; }
-  button.sec { background:#27272a; color:#e4e4e7; }
-  button.qty { width:42px; height:42px; font-size:20px; padding:0; }
-  .badge { display:inline-block; padding:3px 8px; border-radius:6px; font-size:12px; font-weight:600; background:#27272a; color:var(--muted); margin-right:5px; margin-bottom:4px; }
-  .badge.delta-pos { background:rgba(16,185,129,0.2); color:#34d399; border:1px solid #10b981; font-weight:800; }
-  .badge.delta-neg { background:rgba(56,189,248,0.18); color:#38bdf8; border:1px solid #0ea5e9; font-weight:800; }
-  .specs { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; }
-  .specs td { padding:5px 4px; border-bottom:1px solid #222226; vertical-align:top; }
-  .specs td:first-child { color:var(--muted); width:42%; }
-  .toggle { padding:8px 13px; border-radius:20px; font-size:13px; font-weight:700; }
-  .toggle.on { background:rgba(16,185,129,0.2); color:#34d399; border:1px solid #10b981; }
-  .toggle.off { background:rgba(244,63,94,0.15); color:#fb7185; border:1px solid #e11d48; }
-  .price-pill { padding:8px 13px; border-radius:20px; font-size:13px; font-weight:700; background:rgba(251,191,36,0.16); color:#fbbf24; border:1px solid #f59e0b; white-space:nowrap; display:inline-flex; align-items:center; }
-  .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#1e293b; color:#38bdf8; border:1px solid #38bdf8; padding:10px 18px; border-radius:99px; font-size:13px; font-weight:600; z-index:9999; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.6); }
+  button.sec { background:#222226; color:#e4e4e7; }
+  button.qty { width:40px; height:40px; font-size:20px; padding:0; border-radius:10px; }
   label.lbl { display:block; font-size:11px; color:var(--muted); margin-bottom:3px; }
-  .kpi-bar { display:grid; grid-template-columns:repeat(2, 1fr); gap:6px; margin-bottom:10px; }
-  .kpi-btn { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:8px 10px; font-size:12px; color:var(--muted); display:flex; align-items:center; justify-content:space-between; cursor:pointer; text-align:left; font-weight:500; }
-  .kpi-btn strong { color:var(--text); font-size:14px; }
-  .kpi-btn.active { border-color:#3b82f6; background:rgba(59,130,246,0.14); color:#93c5fd; }
-  .kpi-btn.alert { border-color:rgba(245,158,11,0.45); background:rgba(245,158,11,0.08); color:#fbbf24; }
-  .kpi-btn.alert strong { color:#fbbf24; }
-  .kpi-btn.alert.active { border-color:#f59e0b; background:rgba(245,158,11,0.24); }
-  .kpi-drawer { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px; margin-bottom:12px; }
-  .kpi-drawer-hdr { display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.4px; }
-  .kpi-chips { display:flex; flex-wrap:wrap; gap:6px; }
-  .kpi-chip { background:#0e0e11; border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:12px; color:var(--text); cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
-  .kpi-chip.sub { border-style:dashed; font-size:11px; padding:5px 9px; }
-  .kpi-chip.selected { border-color:#3b82f6; background:rgba(59,130,246,0.18); color:#93c5fd; }
+
+  /* PRODUCT CARDS (COMPATTE) */
+  .card {
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:11px 12px;
+    margin-bottom:9px;
+  }
+  .card-head {
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:8px;
+    margin-bottom:6px;
+  }
+  .card-title { font-weight:700; font-size:14.5px; line-height:1.28; }
+  .btn-note-icon {
+    background:transparent;
+    border:1px solid var(--border);
+    color:var(--muted);
+    border-radius:8px;
+    padding:4px 7px;
+    font-size:12px;
+    line-height:1;
+    cursor:pointer;
+    flex-shrink:0;
+  }
+  .btn-note-icon.has-note { border-color:rgba(251,191,36,0.45); color:var(--amber); background:rgba(251,191,36,0.08); }
+  .badges-row { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
+  .badge {
+    display:inline-flex;
+    align-items:center;
+    padding:2px 7px;
+    border-radius:6px;
+    font-size:11.5px;
+    font-weight:600;
+    background:#1e1e23;
+    color:var(--muted);
+  }
+  .badge.mw-copy { cursor:pointer; color:#e4e4e7; border:1px solid #2e2e36; }
+  .badge.mw-copy:active { border-color:var(--blue); color:var(--blue); }
+  .badge.delta-pos { background:rgba(16,185,129,0.18); color:var(--green); border:1px solid #10b981; font-weight:800; }
+  .badge.delta-neg { background:rgba(56,189,248,0.18); color:var(--blue); border:1px solid #0ea5e9; font-weight:800; }
+
+  .ctrl-bar {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    background:#09090b;
+    padding:7px 9px;
+    border-radius:10px;
+    gap:6px;
+  }
+  .toggle { padding:7px 11px; border-radius:20px; font-size:12px; font-weight:700; }
+  .toggle.on { background:rgba(16,185,129,0.18); color:var(--green); border:1px solid #10b981; }
+  .toggle.off { background:rgba(244,63,94,0.14); color:#fb7185; border:1px solid #e11d48; }
+  .price-pill {
+    padding:7px 11px;
+    border-radius:20px;
+    font-size:12.5px;
+    font-weight:700;
+    background:rgba(251,191,36,0.14);
+    color:var(--amber);
+    border:1px solid #f59e0b;
+    white-space:nowrap;
+    display:inline-flex;
+    align-items:center;
+  }
+  .note-pill {
+    margin-top:7px;
+    background:rgba(251,191,36,0.09);
+    border:1px solid rgba(251,191,36,0.28);
+    color:#fde68a;
+    border-radius:8px;
+    padding:5px 9px;
+    font-size:12px;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    gap:6px;
+  }
+  .specs { width:100%; border-collapse:collapse; margin-top:8px; font-size:12.5px; }
+  .specs td { padding:5px 4px; border-bottom:1px solid #1f1f24; vertical-align:top; }
+  .specs td:first-child { color:var(--muted); width:42%; }
+
+  /* FLOATING ACTION BUTTON (+ AD ALTEZZA POLLICE) */
+  .fab {
+    position:fixed;
+    right:18px;
+    bottom:20px;
+    width:54px;
+    height:54px;
+    border-radius:99px;
+    background:var(--accent);
+    color:#fff;
+    font-size:28px;
+    font-weight:400;
+    line-height:1;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    box-shadow:0 8px 24px rgba(225,29,72,0.45);
+    z-index:60;
+    padding:0;
+  }
+  .fab:active { transform:scale(0.94); }
+
+  /* BOTTOM SHEETS / MODALS */
+  .sheet-backdrop {
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,0.8);
+    z-index:100;
+    padding:12px;
+    overflow-y:auto;
+    align-items:flex-end;
+    justify-content:center;
+  }
+  .sheet-backdrop.open { display:flex; }
+  .sheet-box {
+    width:100%;
+    max-width:520px;
+    background:var(--card-elev);
+    border:1px solid #2e2e34;
+    border-radius:18px;
+    padding:16px;
+    margin:auto;
+  }
+  .sheet-hdr {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:12px;
+  }
+  .menu-item {
+    width:100%;
+    background:var(--card);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:12px;
+    padding:12px 14px;
+    font-size:14px;
+    font-weight:600;
+    text-align:left;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    text-decoration:none;
+    margin-bottom:8px;
+    cursor:pointer;
+  }
+  .menu-item.green { border-color:rgba(52,211,153,0.4); color:var(--green); background:rgba(16,185,129,0.1); }
+  .menu-item.danger { border-color:rgba(244,63,94,0.35); color:#fb7185; background:rgba(244,63,94,0.08); }
+
+  .toast {
+    position:fixed;
+    bottom:84px;
+    left:50%;
+    transform:translateX(-50%);
+    background:#1e293b;
+    color:var(--blue);
+    border:1px solid var(--blue);
+    padding:9px 16px;
+    border-radius:99px;
+    font-size:13px;
+    font-weight:600;
+    z-index:200;
+    display:none;
+    white-space:nowrap;
+    box-shadow:0 6px 20px rgba(0,0,0,0.7);
+  }
 </style>
 </head>
 <body>
 
-<h1>
-  <span>Inventario Reparto <small id="count-lbl" style="color:var(--muted);font-weight:400"></small></span>
-  <div class="row">
-    <a href="/api/backup/download" style="color:#38bdf8;font-size:12px;text-decoration:none;margin-right:8px;">Backup CSV</a>
-    <button type="button" id="installAppBtn" onclick="installPwaApp()" style="background:rgba(16,185,129,0.16);border:1px solid rgba(16,185,129,0.45);color:#34d399;border-radius:8px;padding:4px 9px;font-size:12px;font-weight:600;cursor:pointer;margin-right:6px;">📲 Installa</button>
-    <button type="button" onclick="openReportModal()" style="background:rgba(59,130,246,0.16);border:1px solid rgba(59,130,246,0.45);color:#93c5fd;border-radius:8px;padding:4px 9px;font-size:12px;font-weight:600;cursor:pointer;margin-right:10px;">📋 Report</button>
-    <a href="/logout" style="color:var(--muted);font-size:12px;text-decoration:none;">Esci</a>
+<header class="topbar">
+  <div class="topbar-title">
+    <span>droid-wms</span>
+    <small id="count-lbl" style="color:var(--muted);font-weight:500;font-size:13px;"></small>
   </div>
-</h1>
+  <div class="topbar-actions">
+    <button type="button" class="btn-report" onclick="openReportModal()">📋 Report</button>
+    <button type="button" class="btn-menu" onclick="openSheet('menuModal')" aria-label="Menu">⋮</button>
+  </div>
+</header>
 
 <div id="kpiBar" class="kpi-bar"></div>
 <div id="kpiDrawer" class="kpi-drawer" style="display:none;"></div>
 
-<div id="reportModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:9998;padding:14px;overflow-y:auto;">
-  <div style="max-width:520px;margin:12px auto;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-      <strong style="font-size:15px;">Esporta Report Venduto</strong>
-      <button type="button" onclick="closeReportModal()" style="background:transparent;color:#fb7185;border:none;font-size:14px;cursor:pointer;">Chiudi ✕</button>
+<!-- BARRA RICERCA STICKY + FILTRI A SCOMPARSA -->
+<div class="sticky-bar">
+  <div class="search-row">
+    <div class="search-wrap">
+      <input type="text" id="searchInput" placeholder="Cerca MW, EAN, modello o note..." oninput="debouncedRenderList()">
+      <button type="button" class="search-clear" onclick="clearSearch()" title="Pulisci">✕</button>
+    </div>
+    <button type="button" id="btnFilterToggle" class="btn-filter" onclick="toggleFilterPanel()">
+      Filtri <span id="filterBadge"></span>
+    </button>
+  </div>
+
+  <div id="filterPanel" class="filter-drawer" style="display:none;">
+    <div class="grid2" style="margin-bottom:8px;">
+      <div>
+        <label class="lbl">Ordina per</label>
+        <select id="sortSelect" onchange="renderList()">
+          <option value="esposto">Esposti prima</option>
+          <option value="price_asc">Prezzo: crescente</option>
+          <option value="price_desc">Prezzo: decrescente</option>
+          <option value="qty_desc">Giacenza: alta → bassa</option>
+          <option value="qty_asc">Giacenza: bassa → alta</option>
+          <option value="name_asc">Nome: A → Z</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Stato rapido</label>
+        <select id="quickFilter" onchange="renderList()">
+          <option value="all">Tutti i prodotti</option>
+          <option value="esposti">Solo Esposti</option>
+          <option value="non_esposti">Solo Non Esposti</option>
+          <option value="changed">Con variazioni oggi (+n / -n)</option>
+          <option value="restock">Da riassortire (Esposti ≤ 1 pz)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="grid3">
+      <div>
+        <label class="lbl">Marca</label>
+        <select id="fBrand" onchange="renderList()"><option value="">Tutte</option></select>
+      </div>
+      <div>
+        <label class="lbl">Schermo</label>
+        <select id="fScreen" onchange="renderList()"><option value="">Tutti</option></select>
+      </div>
+      <div>
+        <label class="lbl">Scheda Video</label>
+        <select id="fGpu" onchange="renderList()">
+          <option value="">Tutte</option>
+          <option value="Dedicata">Dedicata</option>
+          <option value="Integrata">Integrata</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">RAM (GB)</label>
+        <select id="fRam" onchange="renderList()"><option value="">Tutte</option></select>
+      </div>
+      <div>
+        <label class="lbl">SSD (GB)</label>
+        <select id="fSsd" onchange="renderList()"><option value="">Tutti</option></select>
+      </div>
+      <div>
+        <label class="lbl">Prezzo Max (€)</label>
+        <input type="number" id="fMaxPrice" placeholder="es. 800" oninput="debouncedRenderList()">
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+      <button type="button" class="sec" onclick="resetFilters()" style="font-size:12px;padding:6px 10px;">Azzera filtri</button>
+      <button type="button" class="sec" onclick="toggleFilterPanel()" style="font-size:12px;padding:6px 10px;">Chiudi</button>
+    </div>
+  </div>
+</div>
+
+<div id="productList"></div>
+
+<!-- TASTO FLOTTANTE + AD ALTEZZA POLLICE -->
+<button type="button" class="fab" onclick="openSheet('addModal')" aria-label="Aggiungi prodotto">+</button>
+
+<!-- SHEET 1: MENU PRINCIPALE (⋮) -->
+<div id="menuModal" class="sheet-backdrop" onclick="if(event.target===this)closeSheet('menuModal')">
+  <div class="sheet-box">
+    <div class="sheet-hdr">
+      <strong style="font-size:16px;">Opzioni & Strumenti</strong>
+      <button type="button" onclick="closeSheet('menuModal')" style="background:transparent;color:var(--muted);padding:4px 8px;">✕</button>
+    </div>
+
+    <button type="button" id="installMenuBtn" class="menu-item green" onclick="installPwaApp()">
+      <span>📲 Installa app su schermata Home</span>
+      <span>→</span>
+    </button>
+
+    <a href="/api/backup/download" class="menu-item" onclick="closeSheet('menuModal')">
+      <span>📥 Scarica Backup CSV</span>
+      <span style="color:var(--blue);font-size:12px;">CSV</span>
+    </a>
+
+    <div class="card" style="margin-bottom:8px;background:var(--card);">
+      <label class="lbl" style="margin-bottom:6px;">Importa / Aggiorna da CSV MediaWorld</label>
+      <form onsubmit="importCsv(event)" class="row">
+        <input type="file" id="csvFile" accept=".csv" required style="padding:7px;font-size:12px;">
+        <button type="submit" class="sec" style="padding:9px 12px;font-size:13px;">Importa</button>
+      </form>
+    </div>
+
+    <button type="button" class="menu-item" onclick="closeSheet('menuModal');manualCloseDay();">
+      <span>🌙 Chiudi giornata ora</span>
+      <span style="color:var(--muted);font-size:11px;">Backup + Reset</span>
+    </button>
+
+    <a href="/logout" class="menu-item danger" style="margin-bottom:0;">
+      <span>🚪 Esci dall'account</span>
+      <span>→</span>
+    </a>
+  </div>
+</div>
+
+<!-- SHEET 2: AGGIUNGI PRODOTTO (FAB +) -->
+<div id="addModal" class="sheet-backdrop" onclick="if(event.target===this)closeSheet('addModal')">
+  <div class="sheet-box">
+    <div class="sheet-hdr">
+      <strong style="font-size:16px;">Aggiungi Prodotto</strong>
+      <button type="button" onclick="closeSheet('addModal')" style="background:transparent;color:var(--muted);padding:4px 8px;">✕</button>
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <label class="lbl">Leggi da cartellino digitale qrc.mw</label>
+      <div class="row">
+        <input type="url" id="fetchUrl" placeholder="Incolla link https://qrc.mw/...">
+        <button type="button" class="sec" id="fetchBtn" onclick="fetchFromUrl()">Leggi</button>
+      </div>
+    </div>
+
+    <form id="saveForm" onsubmit="saveProduct(event)" style="border-top:1px solid var(--border);padding-top:12px;">
+      <input type="hidden" id="pSourceUrl">
+      <input type="hidden" id="pSpecsJson" value="{}">
+      <label class="lbl">Titolo / Modello</label>
+      <input type="text" id="pTitle" placeholder="es. LENOVO IdeaPad Slim 3..." required style="margin-bottom:8px;">
+      <div class="grid2" style="margin-bottom:8px;">
+        <div>
+          <label class="lbl">Codice MW / PIM (6 cifre)</label>
+          <input type="text" id="pMw" pattern="[0-9]{6}" placeholder="es. 593522">
+        </div>
+        <div>
+          <label class="lbl">EAN (13 cifre)</label>
+          <input type="text" id="pEan" pattern="[0-9]{12,13}" placeholder="es. 0199276800732">
+        </div>
+      </div>
+      <div class="grid2" style="margin-bottom:12px;">
+        <div>
+          <label class="lbl">Giacenza iniziale</label>
+          <input type="number" id="pQty" value="1" min="0">
+        </div>
+        <div style="padding-top:18px;">
+          <label style="font-size:13px;"><input type="checkbox" id="pEsposto"> Esposto in corsia</label>
+        </div>
+      </div>
+      <button type="submit" style="width:100%;">Salva prodotto</button>
+    </form>
+  </div>
+</div>
+
+<!-- SHEET 3: REPORT VENDUTO TARGET ITALIA -->
+<div id="reportModal" class="sheet-backdrop" onclick="if(event.target===this)closeSheet('reportModal')">
+  <div class="sheet-box">
+    <div class="sheet-hdr">
+      <strong style="font-size:16px;">Esporta Report Venduto</strong>
+      <button type="button" onclick="closeSheet('reportModal')" style="background:transparent;color:var(--muted);padding:4px 8px;">✕</button>
     </div>
 
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.4px;">
@@ -542,7 +1008,7 @@ HTML_SPA = r"""<!doctype html>
     </div>
     <div id="reportBrandChips" class="kpi-chips" style="margin-bottom:12px;"></div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+    <div class="grid2" style="margin-bottom:8px;">
       <div>
         <label class="lbl">Nome promoter</label>
         <input id="repPromoter" type="text" oninput="refreshReportPreview()">
@@ -565,139 +1031,14 @@ HTML_SPA = r"""<!doctype html>
     </div>
 
     <label class="lbl">Anteprima report copiato</label>
-    <textarea id="repPreview" rows="11" readonly style="width:100%;background:#09090b;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;font-family:monospace;font-size:12px;margin-bottom:10px;"></textarea>
+    <textarea id="repPreview" rows="10" readonly style="width:100%;background:#09090b;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:8px;font-family:monospace;font-size:12px;margin-bottom:10px;"></textarea>
 
-    <button type="button" onclick="copyReportManual()" style="width:100%;background:#2563eb;color:#fff;border:none;border-radius:10px;padding:10px;font-weight:600;font-size:13px;cursor:pointer;">
+    <button type="button" onclick="copyReportManual()" style="width:100%;background:#0284c7;color:#fff;border-radius:10px;padding:11px;font-weight:600;font-size:13.5px;">
       📋 Copia di nuovo negli appunti
     </button>
   </div>
 </div>
 
-<!-- RICERCA ISTANTANEA + SORT + FILTRI -->
-<div class="card">
-  <div class="row" style="margin-bottom:8px;">
-    <input type="text" id="searchInput" placeholder="Cerca Codice MW (6 cifre), EAN, modello o note..." oninput="debouncedRenderList()" autofocus>
-    <button type="button" class="sec" onclick="clearSearch()" style="padding:10px 12px;">✕</button>
-  </div>
-
-  <div class="grid2" style="margin-bottom:8px;">
-    <div>
-      <label class="lbl">Ordina per</label>
-      <select id="sortSelect" onchange="renderList()">
-        <option value="esposto">Esposti prima</option>
-        <option value="price_asc">Prezzo: crescente</option>
-        <option value="price_desc">Prezzo: decrescente</option>
-        <option value="qty_desc">Giacenza: alta → bassa</option>
-        <option value="qty_asc">Giacenza: bassa → alta</option>
-        <option value="name_asc">Nome: A → Z</option>
-      </select>
-    </div>
-    <div>
-      <label class="lbl">Stato rapido</label>
-      <select id="quickFilter" onchange="renderList()">
-        <option value="all">Tutti i prodotti</option>
-        <option value="esposti">Solo Esposti</option>
-        <option value="non_esposti">Solo Non Esposti</option>
-        <option value="changed">Con variazioni oggi (+n / -n)</option>
-        <option value="restock">Allerta riassortimento (Esposti ≤ 1 pz)</option>
-      </select>
-    </div>
-  </div>
-
-  <details>
-    <summary style="cursor:pointer; color:var(--muted); font-size:13px; font-weight:600;">Filtri hardware & prezzo</summary>
-    <div class="grid3" style="margin-top:10px;">
-      <div>
-        <label class="lbl">Marca</label>
-        <select id="fBrand" onchange="renderList()"><option value="">Tutte</option></select>
-      </div>
-      <div>
-        <label class="lbl">Schermo</label>
-        <select id="fScreen" onchange="renderList()"><option value="">Tutti</option></select>
-      </div>
-      <div>
-        <label class="lbl">Scheda Video</label>
-        <select id="fGpu" onchange="renderList()">
-          <option value="">Tutte</option>
-          <option value="Dedicata">Dedicata (RTX/GTX/RX)</option>
-          <option value="Integrata">Integrata</option>
-        </select>
-      </div>
-      <div>
-        <label class="lbl">RAM (GB)</label>
-        <select id="fRam" onchange="renderList()"><option value="">Tutte</option></select>
-      </div>
-      <div>
-        <label class="lbl">SSD (GB)</label>
-        <select id="fSsd" onchange="renderList()"><option value="">Tutti</option></select>
-      </div>
-      <div>
-        <label class="lbl">Prezzo Max (€)</label>
-        <input type="number" id="fMaxPrice" placeholder="es. 800" oninput="debouncedRenderList()">
-      </div>
-    </div>
-    <div style="text-align:right; margin-top:8px;">
-      <button type="button" class="sec" onclick="resetFilters()" style="font-size:12px; padding:6px 10px;">Azzera filtri</button>
-    </div>
-  </details>
-</div>
-
-<!-- AGGIUNGI PRODOTTO / CSV / CHIUSURA GIORNATA -->
-<div class="card">
-  <details id="addDetails">
-    <summary style="cursor:pointer;font-weight:600;font-size:14px;">+ Aggiungi prodotto / Importa CSV / Chiusura giornata</summary>
-
-    <div style="margin-top:12px;">
-      <label class="lbl">Leggi da cartellino digitale qrc.mw</label>
-      <div class="row">
-        <input type="url" id="fetchUrl" placeholder="Incolla link https://qrc.mw/...">
-        <button type="button" class="sec" id="fetchBtn" onclick="fetchFromUrl()">Leggi</button>
-      </div>
-    </div>
-
-    <form id="saveForm" onsubmit="saveProduct(event)" style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px;">
-      <input type="hidden" id="pSourceUrl">
-      <input type="hidden" id="pSpecsJson" value="{}">
-      <label class="lbl">Titolo / Modello</label>
-      <input type="text" id="pTitle" placeholder="es. LENOVO IdeaPad Slim 3..." required style="margin-bottom:8px;">
-      <div class="grid2" style="margin-bottom:8px;">
-        <div>
-          <label class="lbl">Codice MW / PIM (6 cifre)</label>
-          <input type="text" id="pMw" pattern="[0-9]{6}" placeholder="es. 593522">
-        </div>
-        <div>
-          <label class="lbl">EAN (13 cifre)</label>
-          <input type="text" id="pEan" pattern="[0-9]{12,13}" placeholder="es. 0199276800732">
-        </div>
-      </div>
-      <div class="grid2" style="margin-bottom:8px;">
-        <div>
-          <label class="lbl">Giacenza iniziale</label>
-          <input type="number" id="pQty" value="1" min="0">
-        </div>
-        <div style="padding-top:18px;">
-          <label style="font-size:13px;"><input type="checkbox" id="pEsposto"> Esposto in corsia</label>
-        </div>
-      </div>
-      <button type="submit" style="width:100%;">Salva prodotto</button>
-    </form>
-
-    <form onsubmit="importCsv(event)" style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px;">
-      <label class="lbl">Importa / Aggiorna da CSV MediaWorld</label>
-      <div class="row">
-        <input type="file" id="csvFile" accept=".csv" required style="padding:7px;">
-        <button type="submit" class="sec">Importa</button>
-      </div>
-    </form>
-
-    <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px; display:flex; justify-content:space-between; align-items:center;">
-      <span style="font-size:12px; color:var(--muted);">Backup automatico alle 00:00 (azzera +n/-n ed elimina giacenza 0)</span>
-      <button type="button" class="sec" onclick="manualCloseDay()" style="font-size:12px; padding:7px 10px;">Chiudi giornata ora</button>
-    </div>
-  </details>
-</div>
-
-<div id="productList"></div>
 <div id="toast" class="toast"></div>
 
 <script>
@@ -706,6 +1047,7 @@ let KPI_TAB = null;       // 'esposti' | 'pezzi' | 'variazioni' | null
 let KPI_SUBFILTER = null; // { mode, brand, categoria, cpu } | null
 let REPORT_FILTER = 'Lenovo';
 let _searchTimer = null;
+let _deferredInstallPrompt = null;
 
 const PEN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
 
@@ -718,12 +1060,69 @@ const SORTERS = {
   name_asc:   (a, b) => a.titolo.localeCompare(b.titolo),
 };
 
+function openSheet(id) {
+  document.getElementById(id).classList.add('open');
+}
+
+function closeSheet(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+function toggleFilterPanel() {
+  const panel = document.getElementById('filterPanel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
+function updateFilterBadge() {
+  let activeCount = 0;
+  if (document.getElementById('sortSelect').value !== 'esposto') activeCount++;
+  if (document.getElementById('quickFilter').value !== 'all') activeCount++;
+  ['fBrand', 'fScreen', 'fGpu', 'fRam', 'fSsd', 'fMaxPrice'].forEach(id => {
+    if (document.getElementById(id).value !== '') activeCount++;
+  });
+  const btn = document.getElementById('btnFilterToggle');
+  const badge = document.getElementById('filterBadge');
+  if (activeCount > 0) {
+    btn.classList.add('has-active');
+    badge.textContent = `(${activeCount})`;
+  } else {
+    btn.classList.remove('has-active');
+    badge.textContent = '';
+  }
+}
+
 function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.style.display = 'block';
   clearTimeout(window._toastTimer);
-  window._toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2800);
+  window._toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2600);
+}
+
+async function copyTextToClipboard(text, fallbackEl = null) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {}
+  try {
+    const ta = fallbackEl || document.createElement('textarea');
+    if (!fallbackEl) {
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+    }
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
+    if (!fallbackEl) document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function apiFetch(url, opts = {}) {
@@ -887,13 +1286,16 @@ function fillSelect(id, items, defaultLabel, fmt = v => v) {
 }
 
 function clearSearch() {
-  document.getElementById('searchInput').value = '';
+  const inp = document.getElementById('searchInput');
+  inp.value = '';
+  inp.focus();
   renderList();
 }
 
 function resetFilters() {
   ['fBrand','fScreen','fGpu','fRam','fSsd','fMaxPrice'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('quickFilter').value = 'all';
+  document.getElementById('sortSelect').value = 'esposto';
   KPI_TAB = null;
   KPI_SUBFILTER = null;
   renderList();
@@ -1064,24 +1466,33 @@ function renderCard(p) {
     ? `<span class="price-pill">€ ${Number.isInteger(p.meta.prezzo) ? p.meta.prezzo : p.meta.prezzo.toFixed(2)}<button type="button" data-action="price" title="Modifica prezzo" style="background:transparent;border:none;color:var(--muted);padding:2px 4px;margin-left:5px;cursor:pointer;display:inline-flex;align-items:center;">${PEN_SVG}</button></span>`
     : `<button type="button" class="sec" data-action="price" title="Imposta prezzo" style="padding:7px 10px;border-radius:20px;font-size:12px;color:#fbbf24;">+ €</button>`;
 
+  const hasNote = Boolean(p.note && p.note.trim());
+  const notePillHtml = hasNote
+    ? `<div class="note-pill" data-action="note-toggle" title="Tocca per modificare nota"><span>📝</span><span>${esc(p.note)}</span></div>`
+    : '';
+
   return `
   <div class="card" id="card-${p.id}" data-id="${p.id}">
-    <div style="font-weight:700; font-size:15px; margin-bottom:6px;">${esc(p.titolo)}</div>
-    <div style="margin-bottom:10px;">
-      ${deltaBadge}
-      ${p.codice_mw ? `<span class="badge" style="user-select:none;-webkit-user-select:none;">MW: <span style="user-select:all;-webkit-user-select:all;display:inline-block;color:#f4f4f5;">${esc(p.codice_mw)}</span></span>` : ''}
-      ${p.ean ? `<span class="badge">EAN: ${esc(p.ean)}</span>` : ''}
-      ${p.meta.ram ? `<span class="badge">${esc(p.meta.ram)}GB RAM</span>` : ''}
-      ${p.meta.ssd ? `<span class="badge">${esc(p.meta.ssd)}GB SSD</span>` : ''}
-      ${p.meta.gpu_tipo === 'Dedicata' ? `<span class="badge" style="color:#c084fc;">GPU Dedicata</span>` : ''}
+    <div class="card-head">
+      <div class="card-title">${esc(p.titolo)}</div>
+      <button type="button" class="btn-note-icon ${hasNote ? 'has-note' : ''}" data-action="note-toggle" title="Note reparto">📝</button>
     </div>
 
-    <div class="row" style="justify-content:space-between; background:#0e0e11; padding:9px; border-radius:10px; gap:6px;">
-      <div class="row">
+    <div class="badges-row">
+      ${deltaBadge}
+      ${p.codice_mw ? `<span class="badge mw-copy" data-action="copy-mw" data-mw="${esc(p.codice_mw)}" title="Tocca per copiare">MW: ${esc(p.codice_mw)}</span>` : ''}
+      ${p.ean ? `<span class="badge">EAN: ${esc(p.ean)}</span>` : ''}
+      ${p.meta.ram ? `<span class="badge">${esc(p.meta.ram)}GB</span>` : ''}
+      ${p.meta.ssd ? `<span class="badge">${esc(p.meta.ssd)}GB</span>` : ''}
+      ${p.meta.gpu_tipo === 'Dedicata' ? `<span class="badge" style="color:#c084fc;">GPU Ded.</span>` : ''}
+    </div>
+
+    <div class="ctrl-bar">
+      <div class="row" style="gap:6px;">
         <button type="button" class="sec qty" data-action="qty-dec">-</button>
-        <div style="min-width:54px; text-align:center;">
-          <div style="font-size:10px;color:var(--muted)">GIACENZA</div>
-          <strong style="font-size:20px;">${p.giacenza}</strong>
+        <div style="min-width:48px; text-align:center;">
+          <div style="font-size:9px;color:var(--muted);letter-spacing:0.4px;">GIACENZA</div>
+          <strong style="font-size:19px;">${p.giacenza}</strong>
         </div>
         <button type="button" class="sec qty" data-action="qty-inc">+</button>
       </div>
@@ -1094,15 +1505,17 @@ function renderCard(p) {
       </div>
     </div>
 
-    <div style="margin-top:9px;">
-      <div class="row">
-        <input type="text" id="note-${p.id}" data-action="note-input" value="${esc(p.note || '')}" placeholder="Note reparto (es. ultimo esposto, manca scatola...)" style="font-size:13px; padding:8px 10px;">
+    ${notePillHtml}
+
+    <div id="note-box-${p.id}" style="display:none; margin-top:8px;">
+      <div class="row" style="gap:6px;">
+        <input type="text" id="note-${p.id}" data-action="note-input" value="${esc(p.note || '')}" placeholder="Nota reparto (es. ultimo esposto, manca scatola...)" style="font-size:13px; padding:8px 10px;">
         <button type="button" class="sec" data-action="note-save" style="padding:8px 11px; font-size:12px;">Salva</button>
       </div>
     </div>
 
     <details style="margin-top:8px;">
-      <summary style="cursor:pointer; color:var(--muted); font-size:12px;">Scheda tecnica (${Object.keys(p.specs || {}).length} voci) & Opzioni</summary>
+      <summary style="cursor:pointer; color:var(--muted); font-size:11.5px;">Scheda tecnica (${Object.keys(p.specs || {}).length} voci) & Opzioni</summary>
       ${specsRows ? `<table class="specs">${specsRows}</table>` : ''}
       <div class="row" style="margin-top:10px;">
         <input type="url" id="enrich-${p.id}" placeholder="Integra scheda da link https://qrc.mw/..." style="padding:8px; font-size:12px;">
@@ -1122,6 +1535,7 @@ function debouncedRenderList() {
 
 function updateSingleCard(id) {
   renderKpiUI();
+  updateFilterBadge();
   const activeFilter = document.getElementById('quickFilter').value;
   if (activeFilter !== 'all' || KPI_SUBFILTER) {
     renderList();
@@ -1147,6 +1561,7 @@ function matchesQuickFilter(p, quick) {
 }
 
 function renderList() {
+  updateFilterBadge();
   const q = document.getElementById('searchInput').value;
   const sortBy = document.getElementById('sortSelect').value;
   const quick = document.getElementById('quickFilter').value;
@@ -1189,7 +1604,7 @@ function renderList() {
 
   const container = document.getElementById('productList');
   if (!filtered.length) {
-    container.innerHTML = `<div style="text-align:center;color:var(--muted);padding:30px 0;">Nessun prodotto trovato.</div>`;
+    container.innerHTML = `<div style="text-align:center;color:var(--muted);padding:34px 0;">Nessun prodotto trovato.</div>`;
     return;
   }
 
@@ -1197,26 +1612,44 @@ function renderList() {
 }
 
 // Event Delegation centralizzata sulle schede prodotto
-document.getElementById('productList').addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-action]');
-  if (!btn) return;
-  const card = btn.closest('.card');
+document.getElementById('productList').addEventListener('click', async (e) => {
+  const trigger = e.target.closest('[data-action]');
+  if (!trigger) return;
+  const card = trigger.closest('.card');
   if (!card) return;
   const id = Number(card.dataset.id);
 
-  switch (btn.dataset.action) {
+  switch (trigger.dataset.action) {
+    case 'copy-mw': {
+      const mw = trigger.dataset.mw || '';
+      const ok = await copyTextToClipboard(mw);
+      showToast(ok ? `Codice MW ${mw} copiato!` : `Codice MW: ${mw}`);
+      break;
+    }
     case 'qty-dec':   updateQty(id, -1); break;
     case 'qty-inc':   updateQty(id, 1); break;
     case 'esposto':   toggleEsposto(id); break;
     case 'price':     editPrice(id); break;
+    case 'note-toggle': {
+      const box = document.getElementById(`note-box-${id}`);
+      if (!box) break;
+      const open = box.style.display === 'none';
+      box.style.display = open ? 'block' : 'none';
+      if (open) {
+        const inp = document.getElementById(`note-${id}`);
+        if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+      }
+      break;
+    }
     case 'note-save': saveNote(id); break;
     case 'enrich':    enrichProduct(id); break;
     case 'delete':    deleteProduct(id); break;
   }
 });
 
-document.getElementById('productList').addEventListener('change', (e) => {
-  if (e.target.matches('input[data-action="note-input"]')) {
+document.getElementById('productList').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('input[data-action="note-input"]')) {
+    e.preventDefault();
     const card = e.target.closest('.card');
     if (card) saveNote(Number(card.dataset.id));
   }
@@ -1280,24 +1713,6 @@ function buildReportText(targetFilter) {
   return { text: out, count: soldItems.length };
 }
 
-async function writeToSystemClipboard(text) {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch (e) {}
-  try {
-    const ta = document.getElementById('repPreview');
-    ta.focus();
-    ta.select();
-    ta.setSelectionRange(0, ta.value.length);
-    return document.execCommand('copy');
-  } catch (e) {
-    return false;
-  }
-}
-
 function renderReportBrandChips() {
   const brandCounts = {};
   let intelSold = 0;
@@ -1330,8 +1745,9 @@ async function selectReportFilter(filterName) {
   REPORT_FILTER = filterName;
   renderReportBrandChips();
   const { text, count } = buildReportText(filterName);
-  document.getElementById('repPreview').value = text;
-  const ok = await writeToSystemClipboard(text);
+  const ta = document.getElementById('repPreview');
+  ta.value = text;
+  const ok = await copyTextToClipboard(text, ta);
   if (count === 0) {
     showToast(`Nessuna vendita oggi per ${filterName}`);
   } else if (ok) {
@@ -1348,8 +1764,9 @@ function refreshReportPreview() {
 
 async function copyReportManual() {
   const { text } = buildReportText(REPORT_FILTER);
-  document.getElementById('repPreview').value = text;
-  const ok = await writeToSystemClipboard(text);
+  const ta = document.getElementById('repPreview');
+  ta.value = text;
+  const ok = await copyTextToClipboard(text, ta);
   showToast(ok ? `Report ${REPORT_FILTER} copiato negli appunti!` : 'Seleziona il testo e copia manualmente');
 }
 
@@ -1362,12 +1779,8 @@ function openReportModal() {
   const hasLenovo = PRODUCTS.some(p => (p.meta.marchio || '').toLowerCase() === 'lenovo');
   REPORT_FILTER = (!hasLenovo && PRODUCTS.length > 0) ? (PRODUCTS[0].meta.marchio || 'Intel') : 'Lenovo';
 
-  document.getElementById('reportModal').style.display = 'block';
+  openSheet('reportModal');
   selectReportFilter(REPORT_FILTER);
-}
-
-function closeReportModal() {
-  document.getElementById('reportModal').style.display = 'none';
 }
 
 async function updateQty(id, delta) {
@@ -1483,7 +1896,10 @@ async function saveNote(id) {
     return;
   }
   const idx = PRODUCTS.findIndex(x => x.id === id);
-  if (idx !== -1 && data.id) PRODUCTS[idx] = prepareSearchIndex(data);
+  if (idx !== -1 && data.id) {
+    PRODUCTS[idx] = prepareSearchIndex(data);
+    updateSingleCard(id);
+  }
   showToast('Nota salvata');
 }
 
@@ -1504,7 +1920,7 @@ async function fetchFromUrl() {
   document.getElementById('pEan').value = data.ean || '';
   document.getElementById('pSourceUrl').value = data.source_url || '';
   document.getElementById('pSpecsJson').value = JSON.stringify(data.specifiche || {});
-  showToast('Scheda estratta: verifica i codici e salva');
+  showToast('Scheda estratta: verifica e salva');
 }
 
 async function saveProduct(e) {
@@ -1526,7 +1942,7 @@ async function saveProduct(e) {
   if (!ok) { showToast(data.error || 'Errore salvataggio'); return; }
   document.getElementById('saveForm').reset();
   document.getElementById('pSpecsJson').value = '{}';
-  document.getElementById('addDetails').open = false;
+  closeSheet('addModal');
   showToast('Prodotto salvato!');
   loadProducts();
 }
@@ -1541,6 +1957,7 @@ async function importCsv(e) {
   showToast(data.message || data.error || 'Operazione completata');
   if (ok) {
     fileInput.value = '';
+    closeSheet('menuModal');
     loadProducts();
   }
 }
@@ -1575,16 +1992,14 @@ async function manualCloseDay() {
   loadProducts();
 }
 
-let _deferredInstallPrompt = null;
-
 function isStandaloneMode() {
   return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 }
 
 function updateInstallBtnState() {
-  const btn = document.getElementById('installAppBtn');
+  const btn = document.getElementById('installMenuBtn');
   if (!btn) return;
-  btn.style.display = isStandaloneMode() ? 'none' : 'inline-block';
+  btn.style.display = isStandaloneMode() ? 'none' : 'flex';
 }
 
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -1596,6 +2011,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
 window.addEventListener('appinstalled', () => {
   _deferredInstallPrompt = null;
   updateInstallBtnState();
+  closeSheet('menuModal');
   showToast('App installata sulla schermata Home!');
 });
 
@@ -1604,7 +2020,10 @@ async function installPwaApp() {
     _deferredInstallPrompt.prompt();
     const { outcome } = await _deferredInstallPrompt.userChoice;
     _deferredInstallPrompt = null;
-    if (outcome === 'accepted') updateInstallBtnState();
+    if (outcome === 'accepted') {
+      updateInstallBtnState();
+      closeSheet('menuModal');
+    }
     return;
   }
   showToast('Apri menu browser (⋮) → Installa app / Aggiungi a Home');
@@ -1912,8 +2331,8 @@ async def pwa_manifest(request: Request):
         "short_name": "droid-wms",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#09090b",
-        "theme_color": "#09090b",
+        "background_color": "#000000",
+        "theme_color": "#000000",
         "orientation": "portrait",
         "icons": [
             {
@@ -1927,7 +2346,7 @@ async def pwa_manifest(request: Request):
 
 
 async def pwa_sw(request: Request):
-    js = """const CACHE = 'droid-wms-v281';
+    js = """const CACHE = 'droid-wms-v290';
 self.addEventListener('install', e => {
   self.skipWaiting();
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/manifest.json', '/icon.svg'])).catch(() => {}));
@@ -1958,8 +2377,8 @@ self.addEventListener('fetch', e => {
 
 async def pwa_icon(request: Request):
     svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#09090b"/>
-  <rect x="28" y="28" width="456" height="456" rx="92" fill="none" stroke="#27272a" stroke-width="12"/>
+  <rect width="512" height="512" rx="112" fill="#000000"/>
+  <rect x="28" y="28" width="456" height="456" rx="92" fill="none" stroke="#26262a" stroke-width="12"/>
   <path d="M128 176l128-64 128 64v160l-128 64-128-64z" fill="none" stroke="#e11d48" stroke-width="26" stroke-linejoin="round"/>
   <path d="M128 176l128 64 128-64M256 240v160" fill="none" stroke="#f4f4f5" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>"""
