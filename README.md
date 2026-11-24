@@ -1,72 +1,72 @@
-# ⚡ droid-wms (v2.8.0)
+# ⚡ droid-wms (v3.0.0)
 
 Gestionale inventario self-hosted ad alte prestazioni progettato per girare in locale su uno smartphone Android dedicato e accessibile via browser come **Progressive Web App (PWA)** nativa.
 
-Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v2.8.0** consolida l'intero ciclo operativo di corsia: **Esportatore Report Venduto (Target Italia)** con filtro dinamico per marchio o processore Intel e copia istantanea nella clipboard di sistema, **KPI interattivi con drill-down**, **modifica rapida dei prezzi**, **pulizia automatica notturna dei prodotti esauriti**, caching HTTP tramite **`ETag` (`304 Not Modified`)**, **scraping asincrono non bloccante**, **Event Delegation centralizzata** e badge azzurri ad alto contrasto (`#38bdf8`) per le variazioni negative.
+Costruito sullo stack asincrono **Starlette + Uvicorn + `selectolax`**, la **v3.0.0** unisce un restyling completo **True Black OLED mobile-first** (header su una riga con menu `⋮`, ricerca sticky, pulsante `+` flottante ad altezza pollice, card compatte e copia rapida del codice MW) a un'architettura ottimizzata su ogni livello: **caching `ETag` (`304 Not Modified`) sia sull'HTML che sulle API**, **connection pooling HTTP**, **thread-safety su SQLite WAL**, **scheduler notturno a risveglio mirato** e **ricerca fuzzy zero-allocation**.
 
-## 🛠️ Dev Stack & Architettura (v2.8.0)
+## 🛠️ Dev Stack & Architettura (v3.0.0)
 
 L'intera infrastruttura gira senza root su un **Samsung Galaxy S22** trasformato in micro-server always-on:
 
 * **Host & Runtime:** Android + **Termux** (con `termux-wake-lock`, `Termux:Boot` per l'avvio automatico e `proot` chroot per la risoluzione DNS nativa).
 
-* **Backend Asincrono & Caching HTTP:** **Python 3** + **Starlette** servito in produzione su **Uvicorn** (`--no-access-log` per ridurre le scritture su flash), con `GZipMiddleware` (compressione payload fino all'80%), **headers `ETag` (`304 Not Modified`)** su `GET /api/products` per azzerare il traffico dati quando l'inventario è invariato, e thread daemon in background con fuso orario `Europe/Rome` (`tzdata`).
+* **Backend Asincrono & Caching HTTP (`0 Byte` su reload):** **Python 3** + **Starlette** servito in produzione su **Uvicorn** (`--no-access-log` per ridurre le scritture su flash), con `GZipMiddleware` (compressione payload fino all'80%), **headers `ETag` (`304 Not Modified`) sia su `GET /` (hash SHA-256 pre-calcolato all'avvio) sia su `GET /api/products`** per azzerare il traffico dati sul tunnel quando non ci sono modifiche, e scheduler notturno `Europe/Rome` (`tzdata`) con calcolo preciso dello sleep fino a mezzanotte per minimizzare i wakeup della CPU.
 
-* **Scraping Non Bloccante & Regex Pre-compilate:** Pipeline ibrida **Regex pre-compilate + `selectolax`** (parser HTML nativo in C) eseguita su thread dedicato tramite `asyncio.to_thread()` con rimozione preventiva delle immagini Base64, mantenendo l'event loop sempre libero durante la lettura dei link `qrc.mw`.
+* **Scraping Non Bloccante & Connection Pooling:** Pipeline ibrida **Regex pre-compilate + `selectolax`** (parser HTML nativo in C) eseguita su thread separato tramite `asyncio.to_thread()` con sessione persistente `requests.Session()` (riuso connessioni TLS/keep-alive), validazione dello schema URL e rimozione preventiva delle immagini Base64.
 
-* **Frontend, PWA Offline-First & Event Delegation:** **Single-Page App (SPA)** installabile come **PWA** (`/manifest.json`, `/sw.js`, `/icon.svg`) con strategia **Network-First + CacheStorage fallback** (`droid-wms-v280`). Gestione centralizzata delle azioni tramite **Event Delegation (`data-action` + `switch/case`)**, comparatori pre-risolti fuori dal loop di ordinamento, wrapper di rete resiliente (`apiFetch`), **aggiornamento DOM chirurgico della singola card (`updateSingleCard`)** e risposte **Optimistic UI a 0 ms** con rollback automatico su errore di rete.
+* **Frontend OLED, PWA One-Tap & Event Delegation:** **Single-Page App (SPA)** in tema **True Black OLED (`#000000`)** installabile come **PWA** (`/manifest.json`, `/sw.js`, `/icon.svg`) con pulsante diretto **📲 Installa app** (`beforeinstallprompt`) che si nasconde automaticamente in modalità `standalone`. Gestione centralizzata degli eventi tramite **Event Delegation (`data-action` + `switch/case`)**, comparatori pre-risolti fuori dal loop di ordinamento, wrapper di rete resiliente (`apiFetch` con supporto nativo HTTP `304`), **aggiornamento DOM chirurgico della singola card (`updateSingleCard`)** con preservazione dello stato aperto (schede tecniche e bozze note) e risposte **Optimistic UI a 0 ms** con rollback automatico su errore di rete.
 
-* **Motore di Ricerca Fuzzy Ibrido & Debounce:** Ricerca multi-token agnostica rispetto al brand con debounce a **70 ms**, tolleranza agli errori di battitura (distanza di **Levenshtein** + match per prefisso sulle parole) combinata ad **ancoraggio numerico rigoroso** (per evitare falsi positivi tra serie diverse, es. *Slim 3* vs *Slim 5*) e ordinamento dinamico per pertinenza.
+* **Motore di Ricerca Fuzzy Zero-Allocation:** Ricerca multi-token agnostica rispetto al brand con debounce a **65 ms**, distanza di **Levenshtein su buffer `Int32Array` riusabili** (zero allocazioni e zero micro-lag da Garbage Collector durante la digitazione) combinata ad **ancoraggio numerico rigoroso** (per distinguere con esattezza serie diverse come *Slim 3* vs *Slim 5*) e ordinamento dinamico per pertinenza.
 
-* **Database & Backup:** **SQLite3** (`inventario.db`) configurato in modalità **`WAL` (`Write-Ahead Logging`)** con chiusura deterministica delle connessioni (`contextlib.closing`), `synchronous=NORMAL`, `temp_store=MEMORY` e `mmap_size=64MB` per mantenere indici e tabelle temporanee in RAM, affiancato da export automatici giornalieri in **CSV** (`backups/`).
+* **Database & Backup:** **SQLite3** (`inventario.db`) configurato in modalità **`WAL` (`Write-Ahead Logging`)** con sincronizzazione thread-safe (`DB_LOCK`), chiusura deterministica delle connessioni (`contextlib.closing`), query su colonne mirate, fast-path nell'estrazione metadati, `synchronous=NORMAL`, `temp_store=MEMORY`, `mmap_size=64MB` e checkpoint WAL passivo durante l'export giornaliero in **CSV** (`backups/`).
 
 * **Networking & Tunneling:** **ngrok** su dominio statico HTTPS con processi persistenti gestiti via **tmux**.
 
-* **Sicurezza:** Autenticazione protetta da hash **PBKDF2-SHA256** (`security.json`), rate-limiting anti-bruteforce in memoria e cookie firmati (`itsdangerous`) `HttpOnly` / `Secure` a persistenza estesa (10 anni con auto-rinnovo ad ogni richiesta).
+* **Sicurezza:** Autenticazione protetta da hash **PBKDF2-SHA256** (`security.json`), rate-limiting anti-bruteforce in memoria con pulizia automatica dei record scaduti e cookie firmati (`itsdangerous`) `HttpOnly` / `Secure` a persistenza estesa (10 anni con auto-rinnovo ad ogni richiesta).
 
-## ✨ Funzionalità (v2.8.0)
+## ✨ Funzionalità (v3.0.0)
+
+* **Interfaccia Mobile-First ad Altezza Pollice:**
+
+  * **Header pulito su una riga:** mostra solo `droid-wms (n/tot)`, il pulsante **📋 Report** e il menu **⋮** a comparsa (che racchiude *Installa app*, *Scarica Backup CSV*, *Importa CSV*, *Chiudi giornata* ed *Esci*, tenendo le azioni delicate lontane dai tocchi accidentali).
+
+  * **Barra di ricerca sticky & Filtri a comparsa:** resta fissata in alto durante lo scorrimento con tasto **Filtri** dotato di contatore attivo `(n)`.
+
+  * **Tasto `+` flottante (FAB) in basso a destra:** raggiungibile con una mano sola per aprire subito il pannello di inserimento (con focus automatico sul campo link `qrc.mw`) e chiusura rapida dei fogli anche tramite tasto `Esc`.
+
+  * **Card prodotto compatte (-30% altezza) & Copia rapida MW:** il campo di modifica delle note resta compatto finché non tocchi **📝** (o la pillola della nota se già presente) e un tap sul badge **MW: xxxxxx** copia istantaneamente il codice PIM negli appunti.
+
+* **Installazione Diretta PWA (`📲 Installa app`):** Pulsante dedicato nel menu **⋮** per avviare l'installazione nativa sulla schermata Home di Android con un solo tocco (con fallback guidato e auto-hide una volta installata).
 
 * **Esportatore Report Venduto (Target Italia) con Copia Automatica:**
 
-  * Pulsante dedicato **📋 Report** nell'header per generare il riepilogo giornaliero dei prodotti venduti (`delta < 0`) nel formato standard richiesto per il report promoter.
+  * Pulsante **📋 Report** nell'header per generare il riepilogo giornaliero dei prodotti venduti (`delta < 0`) nel formato standard richiesto per il report promoter.
 
-  * **Filtro Dinamico Marchio & CPU:** Permette di selezionare con un tap **Intel** (tutte le vendite di dispositivi con processore Intel di qualsiasi brand) oppure una specifica marca rilevata nel catalogo (**Lenovo**, **HP**, **ASUS**, ecc.).
+  * **Filtro Dinamico Marchio & CPU:** Seleziona con un tap **Intel** (tutte le vendite di dispositivi con processore Intel di qualsiasi brand) oppure una specifica marca rilevata nel catalogo (**Lenovo**, **HP**, **ASUS**, ecc.).
 
-  * **Clipboard & Persistenza:** Copia istantaneamente il testo formattato negli appunti di sistema (con fallback universale per PWA/WebView) e memorizza in `localStorage` anagrafica promoter, punto vendita e orario turno, compilando in automatico la data odierna (`GG/MM/AA`).
+  * **Clipboard & Persistenza:** Copia istantaneamente il testo formattato negli appunti di sistema e memorizza in `localStorage` anagrafica promoter, punto vendita e orario turno, compilando in automatico la data odierna (`GG/MM/AA`).
 
 * **Bottoni KPI Interattivi & Drill-Down Dinamico:**
 
-  * **Esposti & Pezzi totali:** Toccando i rispettivi pulsanti si apre un pannello di dettaglio suddiviso dinamicamente per **Marca** (es. *Lenovo*, *HP*, *ASUS*, ecc.) e, per i brand multi-categoria, ulteriormente ripartito tra **Computer (Notebook / Fisso / AIO)** e **Tablet**. Il tap su una singola voce filtra all'istante le card sottostanti.
+  * **Esposti & Pezzi totali:** Apri il pannello di dettaglio suddiviso dinamicamente per **Marca** (es. *Lenovo*, *HP*, *ASUS*, ecc.) e, per i brand multi-categoria, ulteriormente ripartito tra **Computer (Notebook / Fisso / AIO)** e **Tablet**, con filtro istantaneo al tap.
 
-  * **Variazioni oggi:** Consente di filtrare al volo i movimenti giornalieri per **CPU Intel** (trasversale su tutte le marche) oppure per singolo **Brand** (includendo tutte le architetture: Intel, AMD, Snapdragon, ecc.) e sottocategoria.
+  * **Variazioni oggi:** Filtra al volo i movimenti giornalieri per **CPU Intel** (trasversale su tutte le marche) oppure per singolo **Brand** e sottocategoria.
 
-  * **Allerta Riassortimento (`Da riassortire: n`):** Pulsante toggle rapido (disponibile anche nel menu *Stato rapido*) che isola i prodotti attualmente **esposti** con giacenza $\le 1$ (zero scorte residue in magazzino).
+  * **Allerta Riassortimento (`Da riassortire: n`):** Toggle rapido per isolare i prodotti attualmente **esposti** con giacenza $\le 1$.
 
-* **Modifica Rapida Prezzo in Corsia:** Icona matita dedicata accanto al prezzo (o pulsante `+ €` se non ancora impostato) su ogni scheda prodotto per aggiornare al volo il listino (`POST /api/price/{id}`) con aggiornamento istantaneo del database e delle specifiche.
+* **Modifica Rapida Prezzo in Corsia:** Icona matita accanto al prezzo (o pulsante `+ €`) su ogni scheda prodotto per aggiornare al volo il listino (`POST /api/price/{id}`) preservando lo stato aperto della card.
 
-* **Chiusura Giornata, Backup & Pulizia Esauriti (`00:00`):** Ogni notte a mezzanotte (`Europe/Rome`) salva un report CSV completo in `backups/giacenze_YYYY-MM-DD.csv` (scaricabile anche istantaneamente dall'header), **elimina definitivamente dal database tutti i prodotti rimasti a giacenza `0`** e consolida le giacenze attive come nuova base per il giorno successivo. Include anche un pulsante per la chiusura manuale anticipata.
+* **Chiusura Giornata, Backup & Pulizia Esauriti (`00:00`):** Ogni notte a mezzanotte (`Europe/Rome`) salva un report CSV completo in `backups/giacenze_YYYY-MM-DD.csv` (scaricabile anche manualmente dal menu **⋮**), **elimina definitivamente dal database tutti i prodotti rimasti a giacenza `0`** e consolida le giacenze attive come nuova base per il giorno successivo.
 
-* **Installazione Web App Nativa (PWA):** Installabile direttamente dalla schermata Home di Android via Chrome (*"Aggiungi a schermata Home"* / *"Installa app"*), con icona vettoriale dedicata, funzionamento offline-resilient e interfaccia full-screen priva di barra degli indirizzi.
+* **Delta Giacenze Giornaliero ad Alto Contrasto (`+n` / `-n`):** Confronto automatico tra giacenza attuale e inizio giornata (`giacenza_base`), con badge verde (`+n`) per i carichi e badge azzurro elettrico (`-n`, `#38bdf8`) per gli scarichi/vendite.
 
-* **Ricerca Fuzzy Ibrida & Pertinenza:** Supporta ricerche parziali, errori di battitura e codici senza spazi (es. `idepad slim3`, `lenvo`), distinguendo in modo esatto i numeri di serie/modello, il Codice PIM (6 cifre) e l'EAN-13.
-
-* **Interazioni Istantanee (Optimistic UI):** I tasti `+`, `-`, `ESPOSTO` e modifica prezzo aggiornano immediatamente la singola card senza attendere la latenza della rete mobile e senza perdere la posizione di scorrimento, sincronizzando il database in background.
-
-* **Delta Giacenze Giornaliero ad Alto Contrasto (`+n` / `-n`):** Confronto automatico tra la giacenza attuale e quella di inizio giornata (`giacenza_base`). Mostra un badge verde (`+n`) per i carichi e un badge azzurro elettrico (`-n`, `#38bdf8`) per gli scarichi/vendite, distinguendosi chiaramente da `ESPOSTO: NO` e scomparendo automaticamente se il conteggio torna in pari.
-
-* **Note di Reparto:** Campo testuale dedicato su ogni scheda prodotto per segnare informazioni rapide (es. *"ultimo esposto"*, *"manca scatola"*), completamente indicizzato nella ricerca.
-
-* **Ordinamento & Filtri Dinamici Hardware / Prezzo:** Ordinamento istantaneo (esposti, prezzo crescente/decrescente, giacenza, alfabetico) e filtri auto-popolati per **Marca**, **Diagonale Schermo**, **RAM**, **SSD**, **Scheda Video (Dedicata vs Integrata)**, **Prezzo Max** e stato variazioni.
-
-* **UI Mobile-First & Long-Press PIM:** Pillola prezzo arrotondata (`€ PREZZO`) nella barra azioni e isolamento CSS (`user-select`) sulle 6 cifre del Codice PIM (`MW: xxxxxx`) per selezionare esattamente il numero al long-press su smartphone senza catturare spazi.
-
-* **Scraping QR & Import CSV Massivo:** Lettura automatica delle schede tecniche da link `qrc.mw` e aggiornamento massivo dell'inventario da file CSV.
+* **Scraping QR & Import CSV Massivo:** Lettura automatica delle schede tecniche da link `qrc.mw` e aggiornamento massivo dell'inventario da file CSV MediaWorld.
 
 ## 📁 Struttura del Progetto
 
 ```text
 droid-wms/
-├── app.py              # Backend Starlette, ETag 304, scraping async, PWA SW, SQLite WAL/RAM, scheduler 00:00 e SPA
+├── app.py              # Backend Starlette, ETag 304 (HTML+API), scraping async pooled, PWA SW, SQLite WAL e SPA OLED
 ├── requirements.txt    # Dipendenze Python (starlette, uvicorn, selectolax, tzdata, ecc.)
 ├── .gitignore          # Esclusione file sensibili, database, backup CSV e venv
 ├── README.md           # Documentazione del progetto
